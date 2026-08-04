@@ -1,0 +1,72 @@
+[
+  {
+    "carrierIataCode": "LH",
+    "carrierName": "Lufthansa",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "AF",
+    "carrierName": "Air France",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "KL",
+    "carrierName": "KLM",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "IB",
+    "carrierName": "Iberia",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "AZ",
+    "carrierName": "ITA Airways",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "FR",
+    "carrierName": "Ryanair",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "EI",
+    "carrierName": "Aer Lingus",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "TP",
+    "carrierName": "TAP Air Portugal",
+    "isEuCarrier": true,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "BA",
+    "carrierName": "British Airways",
+    "isEuCarrier": false,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "LX",
+    "carrierName": "Swiss International Air Lines",
+    "isEuCarrier": false,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
+  }
+]

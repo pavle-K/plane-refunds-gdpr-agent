@@ -1,0 +1,47 @@
+[
+  {
+    "station": "EGLL",
+    "valid": "2024-06-15 09:50",
+    "sknt": "10.00",
+    "gust": "M",
+    "vsby": "10.00",
+    "skyc1": "CLR",
+    "skyl1": "M",
+    "skyc2": "M",
+    "skyl2": "M",
+    "skyc3": "M",
+    "skyl3": "M",
+    "wxcodes": "M",
+    "metar": "METAR EGLL 150950Z 21010KT 9999 NCD 20/12 Q1015"
+  },
+  {
+    "station": "EGLL",
+    "valid": "2024-06-15 10:00",
+    "sknt": "10.00",
+    "gust": "M",
+    "vsby": "10.00",
+    "skyc1": "CLR",
+    "skyl1": "M",
+    "skyc2": "M",
+    "skyl2": "M",
+    "skyc3": "M",
+    "skyl3": "M",
+    "wxcodes": "M",
+    "metar": "METAR EGLL 151000Z 21010KT 9999 NCD 20/12 Q1015"
+  },
+  {
+    "station": "EGLL",
+    "valid": "2024-06-15 10:20",
+    "sknt": "11.00",
+    "gust": "M",
+    "vsby": "10.00",
+    "skyc1": "CLR",
+    "skyl1": "M",
+    "skyc2": "M",
+    "skyl2": "M",
+    "skyc3": "M",
+    "skyl3": "M",
+    "wxcodes": "M",
+    "metar": "METAR EGLL 151020Z 21011KT 9999 NCD 20/12 Q1015"
+  }
+]

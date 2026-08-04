@@ -1,0 +1,16 @@
+{
+  "flights": [
+    {
+      "ident_iata": "LH456",
+      "operator_iata": "LH",
+      "origin": { "code_iata": "FRA" },
+      "destination": { "code_iata": "SIN" },
+      "scheduled_out": "2024-07-01T08:00:00Z",
+      "actual_out": null,
+      "scheduled_in": "2024-07-01T23:00:00Z",
+      "actual_in": null,
+      "cancelled": true,
+      "diverted": false
+    }
+  ]
+}

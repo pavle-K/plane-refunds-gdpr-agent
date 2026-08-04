@@ -1,0 +1,16 @@
+{
+  "flights": [
+    {
+      "ident_iata": "BA123",
+      "operator_iata": "BA",
+      "origin": { "code_iata": "LHR" },
+      "destination": { "code_iata": "JFK" },
+      "scheduled_out": "2024-06-15T09:50:00Z",
+      "actual_out": "2024-06-15T11:30:00Z",
+      "scheduled_in": "2024-06-15T18:00:00Z",
+      "actual_in": "2024-06-15T21:10:00Z",
+      "cancelled": false,
+      "diverted": false
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "flights": [
+    {
+      "ident_iata": "AF200",
+      "operator_iata": "AF",
+      "origin": { "code_iata": "CDG" },
+      "destination": { "code_iata": "DXB" },
+      "scheduled_out": "2024-06-15T09:00:00Z",
+      "actual_out": "2024-06-15T09:02:00Z",
+      "scheduled_in": "2024-06-15T18:00:00Z",
+      "actual_in": "2024-06-15T17:55:00Z",
+      "cancelled": false,
+      "diverted": false
+    }
+  ]
+}

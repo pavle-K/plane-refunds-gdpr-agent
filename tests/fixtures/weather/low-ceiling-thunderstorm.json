@@ -1,0 +1,17 @@
+[
+  {
+    "station": "KJFK",
+    "valid": "2024-01-15 01:51",
+    "sknt": "28.00",
+    "gust": "38.00",
+    "vsby": "1.00",
+    "skyc1": "FEW",
+    "skyl1": "800",
+    "skyc2": "BKN",
+    "skyl2": "1200",
+    "skyc3": "OVC",
+    "skyl3": "2500",
+    "wxcodes": "+TSRA",
+    "metar": "METAR KJFK 150151Z 28028G38KT 1SM +TSRA FEW008 BKN012 OVC025 05/03 A2985"
+  }
+]
