@@ -9,15 +9,9 @@ import { createInterface } from "node:readline/promises";
 import { Command } from "@langchain/langgraph";
 import { buildGraph } from "../src/agent/graph.js";
 import { getCheckpointer } from "../src/agent/checkpointer.js";
-import { createFlightStatusProvider } from "../src/providers/flight-status/index.js";
-import { createWeatherProvider } from "../src/providers/weather/index.js";
-import { createDisruptionProvider } from "../src/providers/disruption/index.js";
-import { createAirlineDirectoryProvider } from "../src/providers/airline-directory/index.js";
-import { createEmailSendProvider, FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
-import { createPaymentsProvider } from "../src/providers/payments/index.js";
-import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
-import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
-import { DbAuditLog } from "../src/compliance/audit-log.js";
+import { createRealGraphDeps } from "../src/agent/real-deps.js";
+import { FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
+import { FakeLlmClient } from "../src/agent/llm/index.js";
 
 function getArg(name: string): string {
   const idx = process.argv.indexOf(`--${name}`);
@@ -30,20 +24,8 @@ function getArg(name: string): string {
 
 async function main() {
   const threadId = getArg("thread");
-  const llm = createLlmClient();
-  const emailSend = createEmailSendProvider();
-
-  const deps = {
-    extractor: createLlmBookingExtractor(llm),
-    flightStatus: createFlightStatusProvider(),
-    weather: createWeatherProvider(),
-    disruption: createDisruptionProvider(),
-    airlineDirectory: createAirlineDirectoryProvider(),
-    emailSend,
-    payments: createPaymentsProvider(),
-    llm,
-    auditLog: new DbAuditLog(),
-  };
+  const deps = createRealGraphDeps();
+  const { llm, emailSend } = deps;
 
   const graph = buildGraph(deps);
   const config = { configurable: { thread_id: threadId } };

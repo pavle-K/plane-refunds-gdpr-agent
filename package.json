@@ -20,7 +20,8 @@
     "claim:start": "tsx scripts/start-claim.ts",
     "claim:resume": "tsx scripts/resume-claim.ts",
     "email:connect": "tsx scripts/connect-email.ts",
-    "email:check": "tsx scripts/check-inbox.ts"
+    "email:check": "tsx scripts/check-inbox.ts",
+    "chat": "tsx scripts/chat.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

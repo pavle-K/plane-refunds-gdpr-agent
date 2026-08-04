@@ -1,0 +1,322 @@
+import { Command } from "@langchain/langgraph";
+import type Anthropic from "@anthropic-ai/sdk";
+import { buildGraph } from "../agent/graph.js";
+import { createRealGraphDeps } from "../agent/real-deps.js";
+import { runAuthorizationCodeFlow } from "../providers/email-ingest/oauth-flow.js";
+import { EMAIL_OAUTH_PROVIDERS } from "../providers/email-ingest/oauth-providers.js";
+import { REDIRECT_URI } from "../providers/email-ingest/oauth-redirect-uri.js";
+import { EmailConnectionRepo } from "../db/repositories/email-connection.repo.js";
+import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
+import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
+import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
+import { env } from "../config/env.js";
+import type { Booking } from "../domain/claim/claim.types.js";
+
+export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+  {
+    name: "connect_email",
+    description:
+      "Authorizes read-only access to the user's Gmail or Outlook inbox. This opens a browser window for the " +
+      "user to log in and approve access — tell them to check their browser before calling this. Only call when " +
+      "the user has explicitly asked to connect an email account.",
+    input_schema: {
+      type: "object",
+      properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
+      required: ["provider"],
+    },
+  },
+  {
+    name: "scan_inbox",
+    description:
+      "Scans the connected inbox for recent messages, flags which ones look like flight booking confirmations, " +
+      "and extracts structured booking details from those. Requires connect_email to have been run first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        daysBack: { type: "number", description: "How many days back to search. Defaults to 30." },
+      },
+    },
+  },
+  {
+    name: "start_claim",
+    description:
+      "Starts a new EC261 compensation claim for a specific flight and runs it through eligibility checking, " +
+      "scoring, and drafting. Returns the eligibility result and, if eligible, the drafted claim letter for the " +
+      "user to review — do NOT treat this as sent or approved, it always needs a separate explicit decision.",
+    input_schema: {
+      type: "object",
+      properties: {
+        flightNumber: { type: "string", description: "IATA flight number, e.g. BA123" },
+        date: { type: "string", description: "Scheduled departure date, YYYY-MM-DD" },
+        departureAirportIata: { type: "string" },
+        arrivalAirportIata: { type: "string" },
+        carrierCode: { type: "string", description: "IATA carrier code, e.g. BA" },
+        bookingReference: { type: "string" },
+        passengerFullName: { type: "string" },
+      },
+      required: ["flightNumber", "date", "departureAirportIata", "arrivalAirportIata", "carrierCode"],
+    },
+  },
+  {
+    name: "submit_approval_decision",
+    description:
+      "Submits the human's decision on a drafted claim that's waiting for approval. ONLY call this when the " +
+      "user has explicitly and unambiguously stated their decision in their most recent message — never infer " +
+      "approval from silence, a vague reaction, or a request to 'see it again'. If they asked for changes, use " +
+      "action 'edit' with the full corrected letter text, not just the requested change.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
+        action: { type: "string", enum: ["approve", "edit", "decline"] },
+        editedText: { type: "string", description: "Required when action is 'edit' — the full replacement letter text." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "get_claim_status",
+    description: "Checks the current status of a claim thread, including what it's currently waiting on, if anything.",
+    input_schema: {
+      type: "object",
+      properties: { threadId: { type: "string", description: "Omit to use the most recently started/touched claim." } },
+    },
+  },
+  {
+    name: "submit_airline_reply",
+    description:
+      "Provides the airline's reply text for a claim that's waiting for a response, so it can be classified " +
+      "and routed (accepted/rejected/needs more info). Omit replyText to signal a timeout (no reply received).",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
+        replyText: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "submit_payment_confirmation",
+    description: "Confirms the airline actually paid, triggering the commission split and payout.",
+    input_schema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
+        receivedAmountCents: { type: "number" },
+        connectedAccountId: { type: "string", description: "Stripe Connect account id to pay out to." },
+      },
+      required: ["receivedAmountCents", "connectedAccountId"],
+    },
+  },
+];
+
+export class OperatorTools {
+  private readonly deps = createRealGraphDeps();
+  private readonly graph = buildGraph(this.deps);
+  private lastThreadId: string | null = null;
+
+  private resolveThreadId(threadId?: string): string {
+    const id = threadId ?? this.lastThreadId;
+    if (!id) {
+      throw new Error("No claim thread specified and none started yet this session.");
+    }
+    return id;
+  }
+
+  private config(threadId: string) {
+    return { configurable: { thread_id: threadId } };
+  }
+
+  async dispatch(name: string, input: Record<string, unknown>): Promise<unknown> {
+    switch (name) {
+      case "connect_email":
+        return this.connectEmail(input["provider"] as "gmail" | "outlook");
+      case "scan_inbox":
+        return this.scanInbox((input["daysBack"] as number | undefined) ?? 30);
+      case "start_claim":
+        return this.startClaim(input as unknown as StartClaimInput);
+      case "submit_approval_decision":
+        return this.submitApprovalDecision(input as unknown as ApprovalInput);
+      case "get_claim_status":
+        return this.getClaimStatus(input["threadId"] as string | undefined);
+      case "submit_airline_reply":
+        return this.submitAirlineReply(input["threadId"] as string | undefined, input["replyText"] as string | undefined);
+      case "submit_payment_confirmation":
+        return this.submitPaymentConfirmation(input as unknown as PaymentInput);
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+
+  private async connectEmail(provider: "gmail" | "outlook") {
+    if (!env.TOKEN_ENCRYPTION_KEY) {
+      return { error: "TOKEN_ENCRYPTION_KEY is not set in .env — cannot store tokens." };
+    }
+    const clientId = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_ID : env.OUTLOOK_OAUTH_CLIENT_ID;
+    const clientSecret = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_SECRET : env.OUTLOOK_OAUTH_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      return { error: `${provider.toUpperCase()}_OAUTH_CLIENT_ID/_SECRET not set in .env.` };
+    }
+
+    const setup = EMAIL_OAUTH_PROVIDERS[provider];
+    const config = setup.buildConfig(clientId, clientSecret, REDIRECT_URI);
+    const tokens = await runAuthorizationCodeFlow(config);
+    const emailAddress = await setup.fetchEmailAddress(tokens.accessToken);
+
+    const repo = new EmailConnectionRepo();
+    await repo.upsert({
+      provider,
+      emailAddress,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessTokenExpiresAtUtc: tokens.expiresAtUtc,
+    });
+
+    return { connected: true, provider, emailAddress };
+  }
+
+  private async scanInbox(daysBack: number) {
+    const provider = await createEmailIngestProvider();
+    if (provider.constructor.name === "FakeEmailIngestAdapter") {
+      return { error: "No inbox connected — call connect_email first." };
+    }
+
+    const sinceUtc = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    const result = await provider.listRecentMessages({ sinceUtc });
+    if (!result.ok) {
+      return { error: `Failed to list messages: ${result.error.type} — ${result.error.message}` };
+    }
+
+    const extractor = createLlmBookingExtractor(this.deps.llm);
+    const candidates = [];
+    for (const message of result.value) {
+      if (!looksLikeBookingEmail(message.bodyText)) {
+        continue;
+      }
+      const parsed = await extractor(message.bodyText);
+      candidates.push({
+        subject: message.subject,
+        from: message.from,
+        receivedAtUtc: message.receivedAtUtc,
+        parsedBooking: parsed,
+      });
+    }
+
+    return { totalMessages: result.value.length, bookingCandidates: candidates };
+  }
+
+  private async startClaim(input: StartClaimInput) {
+    const threadId = `claim-${Date.now()}`;
+    this.lastThreadId = threadId;
+
+    const booking: Booking = {
+      bookingReference: input.bookingReference ?? `CHAT-${Date.now()}`,
+      passengers: [{ id: "passenger-1", fullName: input.passengerFullName ?? "Unknown Passenger", email: "" }],
+      flightNumber: input.flightNumber,
+      operatingCarrierCode: input.carrierCode,
+      departureAirportIata: input.departureAirportIata,
+      arrivalAirportIata: input.arrivalAirportIata,
+      scheduledDepartureUtc: `${input.date}T00:00:00.000Z`,
+      scheduledArrivalUtc: `${input.date}T00:00:00.000Z`,
+    };
+
+    const result = (await this.graph.invoke(
+      { claimId: threadId, claimStatus: "draft", booking },
+      this.config(threadId),
+    )) as Record<string, unknown>;
+
+    return { threadId, ...this.summarize(result) };
+  }
+
+  private async submitApprovalDecision(input: ApprovalInput) {
+    const threadId = this.resolveThreadId(input.threadId);
+    this.lastThreadId = threadId;
+
+    if (input.action === "edit" && !input.editedText) {
+      return { error: "action 'edit' requires editedText with the full replacement letter." };
+    }
+
+    const decision =
+      input.action === "edit"
+        ? { action: "edit" as const, editedText: input.editedText! }
+        : { action: input.action };
+
+    const result = (await this.graph.invoke(
+      new Command({ resume: decision }),
+      this.config(threadId),
+    )) as Record<string, unknown>;
+
+    return { threadId, ...this.summarize(result) };
+  }
+
+  private async getClaimStatus(threadId?: string) {
+    const id = this.resolveThreadId(threadId);
+    const state = await this.graph.getState(this.config(id));
+    return {
+      threadId: id,
+      claimStatus: state.values.claimStatus,
+      pausedOn: state.next[0] ?? null,
+      draftText: state.values.draftText,
+      escalationReason: state.values.escalationReason,
+      payout: state.values.payout,
+    };
+  }
+
+  private async submitAirlineReply(threadId: string | undefined, replyText: string | undefined) {
+    const id = this.resolveThreadId(threadId);
+    this.lastThreadId = id;
+
+    const resumeValue = replyText ? { type: "reply" as const, airlineReplyText: replyText } : { type: "timeout" as const };
+    const result = (await this.graph.invoke(new Command({ resume: resumeValue }), this.config(id))) as Record<
+      string,
+      unknown
+    >;
+    return { threadId: id, ...this.summarize(result) };
+  }
+
+  private async submitPaymentConfirmation(input: PaymentInput) {
+    const threadId = this.resolveThreadId(input.threadId);
+    this.lastThreadId = threadId;
+
+    const result = (await this.graph.invoke(
+      new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),
+      this.config(threadId),
+    )) as Record<string, unknown>;
+    return { threadId, ...this.summarize(result) };
+  }
+
+  private summarize(result: Record<string, unknown>) {
+    return {
+      claimStatus: result["claimStatus"],
+      eligible: result["eligible"],
+      eligibilityReason: result["eligibilityReason"],
+      compensationCents: result["compensationCents"],
+      draftText: result["draftText"],
+      pausedOn: result["__interrupt__"] ? "waiting for input — describe what's needed based on claimStatus" : null,
+      escalationReason: result["escalationReason"],
+      payout: result["payout"],
+    };
+  }
+}
+
+interface StartClaimInput {
+  flightNumber: string;
+  date: string;
+  departureAirportIata: string;
+  arrivalAirportIata: string;
+  carrierCode: string;
+  bookingReference?: string;
+  passengerFullName?: string;
+}
+
+interface ApprovalInput {
+  threadId?: string;
+  action: "approve" | "edit" | "decline";
+  editedText?: string;
+}
+
+interface PaymentInput {
+  threadId?: string;
+  receivedAmountCents: number;
+  connectedAccountId: string;
+}

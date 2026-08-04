@@ -24,15 +24,10 @@ import { createInterface } from "node:readline/promises";
 import { Command } from "@langchain/langgraph";
 import { buildGraph } from "../src/agent/graph.js";
 import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js";
-import { createFlightStatusProvider, FakeFlightStatusAdapter, buildOnTimeResult } from "../src/providers/flight-status/index.js";
-import { createWeatherProvider } from "../src/providers/weather/index.js";
-import { createDisruptionProvider } from "../src/providers/disruption/index.js";
-import { createAirlineDirectoryProvider } from "../src/providers/airline-directory/index.js";
-import { createEmailSendProvider, FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
-import { createPaymentsProvider } from "../src/providers/payments/index.js";
-import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
-import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
-import { DbAuditLog } from "../src/compliance/audit-log.js";
+import { createRealGraphDeps } from "../src/agent/real-deps.js";
+import { FakeFlightStatusAdapter, buildOnTimeResult } from "../src/providers/flight-status/index.js";
+import { FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
+import { FakeLlmClient } from "../src/agent/llm/index.js";
 import { ok } from "../src/lib/result.js";
 import { env } from "../src/config/env.js";
 import type { Booking } from "../src/domain/claim/claim.types.js";
@@ -74,7 +69,9 @@ async function main() {
   console.log("1. Setting up checkpointer against real Postgres...");
   await setupCheckpointer();
 
-  const flightStatus = createFlightStatusProvider();
+  const deps = createRealGraphDeps();
+  const { flightStatus, llm, emailSend } = deps;
+
   if (flightStatus instanceof FakeFlightStatusAdapter) {
     console.log(`   FLIGHT_DATA_API_KEY not set — seeding a SYNTHETIC flight status (status=${status}, delay=${delayMinutes}m).`);
     flightStatus.seed(
@@ -94,7 +91,6 @@ async function main() {
     console.log("   Using REAL AeroAPI flight-status lookup.");
   }
 
-  const llm = createLlmClient();
   console.log(`   LLM: ${env.ANTHROPIC_API_KEY ? "REAL Anthropic call" : "FAKE (no ANTHROPIC_API_KEY set)"}`);
   if (llm instanceof FakeLlmClient) {
     console.log("   No ANTHROPIC_API_KEY — queuing generic canned score/draft responses so the script can still run.");
@@ -109,20 +105,7 @@ async function main() {
     });
   }
 
-  const emailSend = createEmailSendProvider();
   console.log(`   Email send: ${emailSend instanceof FakeEmailSendAdapter ? "FAKE — nothing will actually be emailed" : "REAL Postmark — approving WILL send a real email"}`);
-
-  const deps = {
-    extractor: createLlmBookingExtractor(llm),
-    flightStatus,
-    weather: createWeatherProvider(),
-    disruption: createDisruptionProvider(),
-    airlineDirectory: createAirlineDirectoryProvider(),
-    emailSend,
-    payments: createPaymentsProvider(),
-    llm,
-    auditLog: new DbAuditLog(),
-  };
 
   const booking: Booking = {
     bookingReference,
