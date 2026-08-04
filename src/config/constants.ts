@@ -29,3 +29,10 @@ export const AIRLINE_RESPONSE_TIMEOUT_DAYS = 14;
 // GDPR retention: how long PII is kept past a claim's resolution before purge.
 // Placeholder pending legal review in Stage 1/3 (src/compliance/retention.ts).
 export const PII_RETENTION_DAYS_POST_RESOLUTION = 180;
+
+// Placeholder business decision, not a technical constant — revisit with whoever
+// owns pricing before this reflects a real commission rate. 2500 = 25%.
+export const DEFAULT_COMMISSION_RATE_BASIS_POINTS = 2500;
+
+// Rebuttal loop bound — prevents rebut→send→classify cycling indefinitely (§5.3).
+export const MAX_REBUTTAL_ATTEMPTS = 2;

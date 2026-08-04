@@ -21,8 +21,9 @@ export interface Booking {
   passengers: Passenger[];
   flightNumber: string;
   operatingCarrierCode: string;
-  departureAirportIata: string;
-  arrivalAirportIata: string;
+  /** May be unknown at ingest time — enriched from a flight-status lookup. */
+  departureAirportIata?: string;
+  arrivalAirportIata?: string;
   scheduledDepartureUtc: string;
   scheduledArrivalUtc: string;
 }
