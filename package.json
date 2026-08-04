@@ -18,7 +18,9 @@
     "db:migrate": "drizzle-kit migrate",
     "verify:stage2": "tsx scripts/verify-stage2.ts",
     "claim:start": "tsx scripts/start-claim.ts",
-    "claim:resume": "tsx scripts/resume-claim.ts"
+    "claim:resume": "tsx scripts/resume-claim.ts",
+    "email:connect": "tsx scripts/connect-email.ts",
+    "email:check": "tsx scripts/check-inbox.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

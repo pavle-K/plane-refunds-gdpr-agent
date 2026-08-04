@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+// This suite must control process.env completely, independent of whatever the
+// developer's real .env file happens to contain — without this, env.ts's own
+// dotenv.config() call re-fills any var a test deletes, straight from disk.
+vi.mock("dotenv", () => ({ config: vi.fn() }));
+
 const ORIGINAL_ENV = { ...process.env };
 
 describe("env", () => {

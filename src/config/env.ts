@@ -19,9 +19,22 @@ const envSchema = z.object({
   // Required starting Stage 1 (data providers). Optional for now.
   FLIGHT_DATA_API_KEY: z.string().min(1).optional(),
   WEATHER_API_KEY: z.string().min(1).optional(),
-  EMAIL_OAUTH_CLIENT_ID: z.string().min(1).optional(),
-  EMAIL_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   POSTMARK_API_KEY: z.string().min(1).optional(),
+
+  // Gmail/Outlook OAuth apps — each registered separately (see scripts/connect-email.ts).
+  GMAIL_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  GMAIL_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+  OUTLOOK_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  OUTLOOK_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+
+  // Base64-encoded 32-byte AES-256 key, used to encrypt OAuth tokens at rest.
+  // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  TOKEN_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .refine((value) => value === undefined || Buffer.from(value, "base64").length === 32, {
+      message: "TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key",
+    }),
 
   // Required starting Stage 2/3 (payouts).
   STRIPE_SECRET_KEY: z.string().min(1).optional(),

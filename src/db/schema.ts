@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, uuid, unique } from "drizzle-orm/pg-core";
 
 /**
  * Append-only by application-level convention: db/repositories/audit.repo.ts only
@@ -12,3 +12,23 @@ export const auditLog = pgTable("audit_log", {
   payload: jsonb("payload").notNull(),
   createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * accessToken/refreshToken are stored encrypted (src/lib/crypto.ts) — never
+ * plaintext. One row per connected inbox; provider+emailAddress is unique so
+ * reconnecting the same inbox updates rather than duplicates.
+ */
+export const emailConnections = pgTable(
+  "email_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(), // "gmail" | "outlook"
+    emailAddress: text("email_address").notNull(),
+    encryptedAccessToken: text("encrypted_access_token").notNull(),
+    encryptedRefreshToken: text("encrypted_refresh_token").notNull(),
+    accessTokenExpiresAtUtc: timestamp("access_token_expires_at_utc", { withTimezone: true }).notNull(),
+    createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+    updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique().on(table.provider, table.emailAddress)],
+);
