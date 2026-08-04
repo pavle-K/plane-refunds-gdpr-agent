@@ -5,6 +5,12 @@
 
 export const EC261_DELAY_THRESHOLD_MINUTES = 180; // 3h, measured on arrival
 
+// Simplification: EC261 Art. 5(1)(c) actually tiers by 14/7 days plus rerouting-time
+// offered, not a single cutoff. This binary threshold covers the common case; the
+// rerouting-time nuance needs additional inputs not yet modeled — revisit before
+// this is relied on for cancellations notified 7–14 days out with rerouting offered.
+export const EC261_CANCELLATION_NOTICE_THRESHOLD_DAYS = 14;
+
 export const EC261_DISTANCE_BANDS_KM = {
   SHORT_MAX: 1500,
   MEDIUM_MAX: 3500,
