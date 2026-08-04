@@ -16,9 +16,10 @@
     "format": "prettier --write .",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "verify:stage0": "tsx scripts/verify-stage0.ts"
+    "verify:stage2": "tsx scripts/verify-stage2.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@langchain/langgraph": "^1.4.9",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "dotenv": "^17.4.2",
