@@ -33,15 +33,26 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
       throw new Error("sendClaim: missing booking or approvedText");
     }
 
-    const airlineResult = await deps.airlineDirectory.getAirline(state.booking.operatingCarrierCode);
-    if (!airlineResult.ok) {
-      throw new Error(`sendClaim: no airline directory entry for ${state.booking.operatingCarrierCode}`);
+    // Sent to the LAST segment's operating carrier, matching the carrier used
+    // for the Article 3(1)(b) coverage test in check-eligibility.node.ts. For a
+    // multi-carrier connecting itinerary, which carrier is actually liable is a
+    // genuinely nuanced legal question (see eligibility.ts's comment on this) —
+    // this is a simplification, not a settled answer.
+    const lastSegment = state.booking.segments[state.booking.segments.length - 1];
+    if (!lastSegment) {
+      throw new Error("sendClaim: booking has no segments");
     }
 
+    const airlineResult = await deps.airlineDirectory.getAirline(lastSegment.operatingCarrierCode);
+    if (!airlineResult.ok) {
+      throw new Error(`sendClaim: no airline directory entry for ${lastSegment.operatingCarrierCode}`);
+    }
+
+    const flightNumbers = state.booking.segments.map((s) => s.flightNumber).join("/");
     const result = await deps.emailSend.send({
       to: airlineResult.value.claimsEmail,
       from: deps.fromAddress ?? "claims@example.com",
-      subject: `EC261 Compensation Claim — ${state.booking.flightNumber} — ${state.booking.bookingReference}`,
+      subject: `EC261 Compensation Claim — ${flightNumbers} — ${state.booking.bookingReference}`,
       textBody: state.approvedText,
     });
 

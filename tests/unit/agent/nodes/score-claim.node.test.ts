@@ -12,10 +12,14 @@ import type { FlightStatusResult } from "../../../../src/providers/flight-status
 const BOOKING: Booking = {
   bookingReference: "ABC123",
   passengers: [{ id: "p1", fullName: "Jane Doe", email: "jane@example.com" }],
-  flightNumber: "LH456",
-  operatingCarrierCode: "LH",
-  scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
-  scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+  segments: [
+    {
+      flightNumber: "LH456",
+      operatingCarrierCode: "LH",
+      scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
+      scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+    },
+  ],
 };
 
 const FLIGHT_STATUS: FlightStatusResult = {
@@ -56,7 +60,7 @@ describe("score-claim node", () => {
     });
 
     const node = createScoreClaimNode(deps);
-    const state = buildState({ booking: BOOKING, flightStatus: FLIGHT_STATUS, eligible: true, compensationCents: 60000 });
+    const state = buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], eligible: true, compensationCents: 60000 });
 
     const result = await node(state);
 
@@ -77,7 +81,7 @@ describe("score-claim node", () => {
     const node = createScoreClaimNode(deps);
     const state = buildState({
       booking: BOOKING,
-      flightStatus: unknownAirportFlightStatus,
+      flightStatuses: [unknownAirportFlightStatus],
       eligible: true,
       compensationCents: 60000,
     });
@@ -87,7 +91,7 @@ describe("score-claim node", () => {
     expect(result.weatherObservation).toBeNull();
   });
 
-  it("throws if booking or flightStatus is missing", async () => {
+  it("throws if booking or flightStatuses is missing", async () => {
     const deps = buildDeps();
     const node = createScoreClaimNode(deps);
     await expect(node(buildState())).rejects.toThrow();

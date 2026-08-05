@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
-import { callStructured, StructuredLlmOutputError } from "../../../../src/agent/llm/structured.js";
+import { callStructured, callStructuredWithTools, StructuredLlmOutputError } from "../../../../src/agent/llm/structured.js";
 import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
 
 const schema = z.object({ eligible: z.boolean(), confidence: z.number() });
@@ -48,5 +48,49 @@ describe("callStructured", () => {
 
     expect(client.calls[0]?.system).toContain("base instructions");
     expect(client.calls[0]?.system).toContain("ONLY valid JSON");
+  });
+});
+
+describe("callStructuredWithTools", () => {
+  it("returns the final response directly when no tool is called", async () => {
+    const client = new FakeLlmClient();
+    client.enqueueFinalJson({ eligible: true, confidence: 0.9 });
+
+    const result = await callStructuredWithTools(client, {
+      system: "sys",
+      prompt: "p",
+      schema,
+      tools: [],
+      onToolCall: async () => "unused",
+    });
+
+    expect(result).toEqual({ eligible: true, confidence: 0.9 });
+  });
+
+  it("runs the tool loop and validates only the final non-tool-call response", async () => {
+    const client = new FakeLlmClient();
+    client.enqueueToolCall({ name: "lookup", input: { id: "abc" } });
+    client.enqueueFinalJson({ eligible: false, confidence: 0.1 });
+
+    const onToolCall = vi.fn().mockResolvedValue(JSON.stringify({ found: true }));
+    const result = await callStructuredWithTools(client, {
+      system: "sys",
+      prompt: "p",
+      schema,
+      tools: [{ name: "lookup", description: "looks something up", inputSchema: { type: "object" } }],
+      onToolCall,
+    });
+
+    expect(result).toEqual({ eligible: false, confidence: 0.1 });
+    expect(onToolCall).toHaveBeenCalledWith({ name: "lookup", input: { id: "abc" } });
+  });
+
+  it("throws StructuredLlmOutputError when the final response fails schema validation", async () => {
+    const client = new FakeLlmClient();
+    client.enqueueFinalJson({ eligible: "yes" });
+
+    await expect(
+      callStructuredWithTools(client, { system: "sys", prompt: "p", schema, tools: [], onToolCall: async () => "" }),
+    ).rejects.toThrow(StructuredLlmOutputError);
   });
 });

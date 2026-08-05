@@ -6,9 +6,8 @@ import type { Booking } from "../../../../src/domain/claim/claim.types.js";
 
 const fixedExtractor: BookingExtractor = async () => ({
   bookingReference: "XR7K2P",
-  flightNumber: "BA123",
-  scheduledDepartureDateUtc: "2024-06-15",
   passengerFullName: "John Smith",
+  segments: [{ flightNumber: "BA123", scheduledDepartureDateUtc: "2024-06-15" }],
 });
 
 describe("ingest node", () => {
@@ -17,10 +16,14 @@ describe("ingest node", () => {
     const existing: Booking = {
       bookingReference: "ALREADY",
       passengers: [],
-      flightNumber: "BA1",
-      operatingCarrierCode: "BA",
-      scheduledDepartureUtc: "2024-01-01T00:00:00.000Z",
-      scheduledArrivalUtc: "2024-01-01T02:00:00.000Z",
+      segments: [
+        {
+          flightNumber: "BA1",
+          operatingCarrierCode: "BA",
+          scheduledDepartureUtc: "2024-01-01T00:00:00.000Z",
+          scheduledArrivalUtc: "2024-01-01T02:00:00.000Z",
+        },
+      ],
     };
     const state = buildState({ booking: existing });
 
@@ -35,8 +38,8 @@ describe("ingest node", () => {
     const result = await node(state);
 
     expect(result.booking?.bookingReference).toBe("XR7K2P");
-    expect(result.booking?.flightNumber).toBe("BA123");
-    expect(result.booking?.operatingCarrierCode).toBe("BA");
+    expect(result.booking?.segments[0]?.flightNumber).toBe("BA123");
+    expect(result.booking?.segments[0]?.operatingCarrierCode).toBe("BA");
     expect(result.booking?.passengers[0]?.fullName).toBe("John Smith");
   });
 
@@ -51,5 +54,24 @@ describe("ingest node", () => {
     const state = buildState({ rawEmailText: "not a booking" });
 
     await expect(node(state)).rejects.toThrow();
+  });
+
+  it("maps every extracted segment of a connecting itinerary, in order", async () => {
+    const connectingExtractor: BookingExtractor = async () => ({
+      bookingReference: "TK9F3K",
+      passengerFullName: "Jane Doe",
+      segments: [
+        { flightNumber: "TK1867", scheduledDepartureDateUtc: "2026-01-10" },
+        { flightNumber: "TK57", scheduledDepartureDateUtc: "2026-01-10" },
+      ],
+    });
+    const node = createIngestNode({ extractor: connectingExtractor });
+    const state = buildState({ rawEmailText: "Booking reference: TK9F3K ..." });
+
+    const result = await node(state);
+
+    expect(result.booking?.segments).toHaveLength(2);
+    expect(result.booking?.segments[0]?.flightNumber).toBe("TK1867");
+    expect(result.booking?.segments[1]?.flightNumber).toBe("TK57");
   });
 });

@@ -25,16 +25,23 @@ const scoreSchema = z.object({
 
 export function createScoreClaimNode(deps: ScoreClaimNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {
-    if (!state.booking || !state.flightStatus) {
-      throw new Error("scoreClaim: booking and flightStatus are required");
+    if (!state.booking || state.flightStatuses.length === 0) {
+      throw new Error("scoreClaim: booking and flightStatuses are required");
     }
+
+    // Evidence-gathering targets whichever segment actually drives the disruption
+    // type — the cancelled one if any, otherwise the final segment (the one that
+    // governs delay eligibility under Folkerts — see check-eligibility.node.ts).
+    const relevantSegment =
+      state.flightStatuses.find((s) => s.status === "cancelled") ??
+      state.flightStatuses[state.flightStatuses.length - 1]!;
 
     let weatherObservation = null;
     try {
-      const ref = getAirportReference(state.flightStatus.departureAirportIata);
+      const ref = getAirportReference(relevantSegment.departureAirportIata);
       const weatherResult = await deps.weather.getObservation({
         icaoCode: ref.icao,
-        atUtc: state.flightStatus.scheduledDepartureUtc,
+        atUtc: relevantSegment.scheduledDepartureUtc,
       });
       if (weatherResult.ok) {
         weatherObservation = weatherResult.value;
@@ -44,8 +51,8 @@ export function createScoreClaimNode(deps: ScoreClaimNodeDeps) {
     }
 
     const disruptionResult = await deps.disruption.getDisruptions({
-      airportIata: state.flightStatus.departureAirportIata,
-      dateUtc: state.flightStatus.scheduledDepartureUtc.slice(0, 10),
+      airportIata: relevantSegment.departureAirportIata,
+      dateUtc: relevantSegment.scheduledDepartureUtc.slice(0, 10),
     });
     const disruptionEvents = disruptionResult.ok ? disruptionResult.value : [];
 
@@ -56,13 +63,13 @@ export function createScoreClaimNode(deps: ScoreClaimNodeDeps) {
       prompt: JSON.stringify({
         eligible: state.eligible,
         compensationCents: state.compensationCents,
-        flight: {
-          flightNumber: state.booking.flightNumber,
-          departureAirportIata: state.flightStatus.departureAirportIata,
-          arrivalAirportIata: state.flightStatus.arrivalAirportIata,
-          delayMinutesAtArrival: state.flightStatus.delayMinutesAtArrival,
-          status: state.flightStatus.status,
-        },
+        itinerary: state.flightStatuses.map((s) => ({
+          flightNumber: s.flightNumber,
+          departureAirportIata: s.departureAirportIata,
+          arrivalAirportIata: s.arrivalAirportIata,
+          delayMinutesAtArrival: s.delayMinutesAtArrival,
+          status: s.status,
+        })),
         extraordinaryCircumstanceVerdict: extraordinaryVerdict,
         weatherObservation,
         disruptionEvents,

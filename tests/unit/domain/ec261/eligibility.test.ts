@@ -44,6 +44,27 @@ describe("checkEligibility — delay", () => {
   });
 });
 
+describe("checkEligibility — connecting itineraries (Folkerts v Air France, C-11/11)", () => {
+  it("is not eligible when an early-leg delay is absorbed before the final arrival", () => {
+    // The caller is responsible for combining segments — this documents the
+    // contract: delayMinutesAtArrival must be the FINAL arrival delay, not any
+    // intermediate leg's own delay. A 4h delay on leg 1 that still gets the
+    // passenger to the final destination on schedule must be passed in as 0
+    // (or whatever the real final-arrival delta is), never as 240.
+    const result = checkEligibility({ ...EU_TO_EU, delayMinutesAtArrival: 0 });
+    expect(result.eligible).toBe(false);
+  });
+
+  it("is eligible for the WHOLE itinerary when an early-leg delay causes the final arrival to be 3+ hours late", () => {
+    // Same scenario, but the leg-1 delay caused a missed connection: the final
+    // destination arrival ends up 4 hours late. This is eligible for the full
+    // original-departure-to-final-destination trip — there is no concept of
+    // "only the delayed leg" in EC261 for a single-booking connection.
+    const result = checkEligibility({ ...EU_TO_EU, delayMinutesAtArrival: 240 });
+    expect(result.eligible).toBe(true);
+  });
+});
+
 describe("checkEligibility — route coverage", () => {
   it("covers departure from an EU airport regardless of carrier", () => {
     const result = checkEligibility({

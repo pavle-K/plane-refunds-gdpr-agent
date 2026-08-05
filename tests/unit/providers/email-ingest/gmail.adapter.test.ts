@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { GmailAdapter } from "../../../../src/providers/email-ingest/gmail.adapter.js";
 
+vi.mock("../../../../src/lib/pdf-text.js", () => ({
+  extractPdfText: vi.fn().mockResolvedValue("Turkish Airlines • TK1867\nTurkish Airlines • TK57"),
+}));
+
 /**
  * Fixtures are a best-effort reconstruction of Gmail API v1's documented
  * response shape, NOT captured from a real call — see the adapter's header
@@ -212,6 +216,120 @@ describe("GmailAdapter", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.type).toBe("upstream_error");
+    }
+  });
+});
+
+describe("GmailAdapter — attachments", () => {
+  const DETAIL_WITH_PDF = {
+    id: "msg-pdf",
+    payload: {
+      mimeType: "multipart/mixed",
+      headers: [{ name: "Subject", value: "Your trip is confirmed" }],
+      parts: [
+        { mimeType: "text/plain", body: { data: Buffer.from("see attached").toString("base64") } },
+        {
+          mimeType: "application/pdf",
+          filename: "Receipt_1119-971-928.pdf",
+          body: { attachmentId: "att-1", size: 15964 },
+        },
+      ],
+    },
+  };
+
+  it("surfaces attachment metadata when listing messages", async () => {
+    const fetchMock = vi.fn((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/messages/msg-pdf?format=full")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(DETAIL_WITH_PDF) });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ messages: [{ id: "msg-pdf" }] }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+    const result = await adapter.listRecentMessages({ sinceUtc: "2024-06-01T00:00:00.000Z" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.messages[0]?.attachments).toEqual([
+        { filename: "Receipt_1119-971-928.pdf", mimeType: "application/pdf" },
+      ]);
+    }
+  });
+
+  it("extracts PDF text via getAttachmentText", async () => {
+    const fetchMock = vi.fn((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/attachments/att-1")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: Buffer.from("fake pdf bytes").toString("base64") }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(DETAIL_WITH_PDF) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+    const result = await adapter.getAttachmentText("msg-pdf", "Receipt_1119-971-928.pdf");
+
+    expect(result).toEqual({ ok: true, value: "Turkish Airlines • TK1867\nTurkish Airlines • TK57" });
+  });
+
+  it("returns not_found for a nonexistent attachment filename", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(DETAIL_WITH_PDF) }),
+    );
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "does-not-exist.pdf");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe("not_found");
+    }
+  });
+
+  it("returns unsupported_attachment for a non-PDF, non-text attachment", async () => {
+    const detailWithImage = {
+      ...DETAIL_WITH_PDF,
+      payload: {
+        ...DETAIL_WITH_PDF.payload,
+        parts: [
+          {
+            mimeType: "image/png",
+            filename: "photo.png",
+            body: { attachmentId: "att-2", size: 1000 },
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/attachments/att-2")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: Buffer.from("fake png bytes").toString("base64") }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(detailWithImage) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "photo.png");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe("unsupported_attachment");
     }
   });
 });

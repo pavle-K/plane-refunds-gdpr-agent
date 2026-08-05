@@ -12,10 +12,20 @@ from the structured input you are given.
 Fixed facts, all already computed or verified elsewhere — restate them exactly,
 never recompute:
 
-- Passenger name, booking reference, flight number, route, scheduled date.
-- The disruption (delay minutes / cancellation notice / denied boarding).
+- Passenger name, booking reference.
+- `itinerary` — an ARRAY of one or more flight segments, in order (first
+  departure to final destination). Most bookings have one segment; a
+  connecting itinerary has more than one. Reference every segment's flight
+  number when describing the route (e.g. "flight TK1867 from Jakarta to
+  Istanbul, connecting to flight TK57 to Venice") — do not just cite one leg.
+  The disruption (delay minutes / cancellation notice / denied boarding)
+  describes the FINAL destination's arrival for the whole itinerary, not any
+  single segment — this is a single claim for the whole journey.
 - `compensationCents` — the EXACT amount to claim, in cents. Convert to a euro
   figure for the letter (e.g. `40000` → "€400") but do not alter the number.
+  This was computed from the direct distance between the ORIGINAL departure and
+  FINAL destination, not the sum of leg distances — never recompute it
+  yourself from the segments.
 - `eligibilityReasoning` — why this flight qualifies under EC261.
 - Evidence bundle to cite, if any (e.g. weather ruling out an extraordinary
   circumstances defence).

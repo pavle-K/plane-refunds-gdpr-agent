@@ -38,10 +38,14 @@ function buildMiniGraph() {
 const BOOKING: Booking = {
   bookingReference: "ABC123",
   passengers: [{ id: "p1", fullName: "Jane Doe", email: "jane@example.com" }],
-  flightNumber: "LH456",
-  operatingCarrierCode: "LH",
-  scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
-  scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+  segments: [
+    {
+      flightNumber: "LH456",
+      operatingCarrierCode: "LH",
+      scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
+      scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+    },
+  ],
 };
 
 function threadConfig(threadId: string) {

@@ -45,7 +45,8 @@ export const GraphState = Annotation.Root({
   rawEmailText: Annotation<string | null>(overwrite<string | null>(null)),
   booking: Annotation<Booking | null>(overwrite<Booking | null>(null)),
 
-  flightStatus: Annotation<FlightStatusResult | null>(overwrite<FlightStatusResult | null>(null)),
+  /** One entry per booking.segments[], same order. First = first departure, last = final arrival. */
+  flightStatuses: Annotation<FlightStatusResult[]>(overwrite<FlightStatusResult[]>([])),
   eligible: Annotation<boolean | null>(overwrite<boolean | null>(null)),
   eligibilityReason: Annotation<string | null>(overwrite<string | null>(null)),
   compensationCents: Annotation<number | null>(overwrite<number | null>(null)),

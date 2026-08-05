@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { OutlookAdapter } from "../../../../src/providers/email-ingest/outlook.adapter.js";
 
+vi.mock("../../../../src/lib/pdf-text.js", () => ({
+  extractPdfText: vi.fn().mockResolvedValue("Turkish Airlines • TK1867\nTurkish Airlines • TK57"),
+}));
+
 /**
  * Fixture is a best-effort reconstruction of Microsoft Graph's documented
  * /me/messages response shape, NOT captured from a real call — see the
@@ -165,6 +169,80 @@ describe("OutlookAdapter", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.type).toBe("upstream_error");
+    }
+  });
+});
+
+describe("OutlookAdapter — attachments", () => {
+  const MESSAGE_WITH_PDF = {
+    id: "msg-pdf",
+    subject: "Your trip is confirmed",
+    receivedDateTime: "2024-06-15T09:00:00Z",
+    from: { emailAddress: { address: "noreply@mytrip.com" } },
+    body: { content: "see attached" },
+    attachments: [{ name: "Receipt_1119-971-928.pdf", contentType: "application/pdf" }],
+  };
+
+  it("surfaces attachment metadata when listing messages", async () => {
+    mockFetchOnce({ value: [MESSAGE_WITH_PDF] });
+    const adapter = new OutlookAdapter(async () => "fake-access-token");
+
+    const result = await adapter.listRecentMessages({ sinceUtc: "2024-06-01T00:00:00.000Z" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.messages[0]?.attachments).toEqual([
+        { filename: "Receipt_1119-971-928.pdf", mimeType: "application/pdf" },
+      ]);
+    }
+  });
+
+  it("extracts PDF text via getAttachmentText", async () => {
+    mockFetchOnce({
+      value: [
+        {
+          name: "Receipt_1119-971-928.pdf",
+          contentType: "application/pdf",
+          contentBytes: Buffer.from("fake pdf bytes").toString("base64"),
+        },
+      ],
+    });
+    const adapter = new OutlookAdapter(async () => "fake-access-token");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "Receipt_1119-971-928.pdf");
+
+    expect(result).toEqual({ ok: true, value: "Turkish Airlines • TK1867\nTurkish Airlines • TK57" });
+  });
+
+  it("returns not_found for a nonexistent attachment filename", async () => {
+    mockFetchOnce({ value: [] });
+    const adapter = new OutlookAdapter(async () => "fake-access-token");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "does-not-exist.pdf");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe("not_found");
+    }
+  });
+
+  it("returns unsupported_attachment for a non-PDF, non-text attachment", async () => {
+    mockFetchOnce({
+      value: [
+        {
+          name: "photo.png",
+          contentType: "image/png",
+          contentBytes: Buffer.from("fake png bytes").toString("base64"),
+        },
+      ],
+    });
+    const adapter = new OutlookAdapter(async () => "fake-access-token");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "photo.png");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe("unsupported_attachment");
     }
   });
 });

@@ -110,12 +110,16 @@ async function main() {
   const booking: Booking = {
     bookingReference,
     passengers: [{ id: "passenger-1", fullName: passengerFullName, email: "" }],
-    flightNumber,
-    operatingCarrierCode: carrierCode,
-    departureAirportIata,
-    arrivalAirportIata,
-    scheduledDepartureUtc: `${scheduledDepartureDateUtc}T00:00:00.000Z`,
-    scheduledArrivalUtc: `${scheduledDepartureDateUtc}T00:00:00.000Z`,
+    segments: [
+      {
+        flightNumber,
+        operatingCarrierCode: carrierCode,
+        departureAirportIata,
+        arrivalAirportIata,
+        scheduledDepartureUtc: `${scheduledDepartureDateUtc}T00:00:00.000Z`,
+        scheduledArrivalUtc: `${scheduledDepartureDateUtc}T00:00:00.000Z`,
+      },
+    ],
   };
 
   const graph = buildGraph(deps);

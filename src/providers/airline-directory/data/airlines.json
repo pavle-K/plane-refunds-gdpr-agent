@@ -68,5 +68,12 @@
     "isEuCarrier": false,
     "claimsEmail": "claims@REPLACE-ME.example",
     "knownRejectionPatterns": []
+  },
+  {
+    "carrierIataCode": "TK",
+    "carrierName": "Turkish Airlines",
+    "isEuCarrier": false,
+    "claimsEmail": "claims@REPLACE-ME.example",
+    "knownRejectionPatterns": []
   }
 ]

@@ -54,21 +54,41 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "start_claim",
     description:
-      "Starts a new EC261 compensation claim for a specific flight and runs it through eligibility checking, " +
-      "scoring, and drafting. Returns the eligibility result and, if eligible, the drafted claim letter for the " +
-      "user to review — do NOT treat this as sent or approved, it always needs a separate explicit decision.",
+      "Starts a new EC261 compensation claim for a trip and runs it through eligibility checking, scoring, and " +
+      "drafting. Pass ALL segments of the itinerary in order (first departure to final destination) — for a " +
+      "connecting flight, that's more than one segment; a direct flight is just one. Never split a connecting " +
+      "itinerary into separate claims: EC261 eligibility is judged on the FINAL destination's arrival delay for " +
+      "the whole trip (Folkerts v Air France, C-11/11), not any individual leg. Only flightNumber and date are " +
+      "required per segment — the pipeline looks up departure/arrival airports, the operating carrier, and the " +
+      "actual delay/cancellation status itself from the flight number and date, so do NOT ask the user for " +
+      "airport codes or a carrier code; just call this with what you already extracted. Returns the eligibility " +
+      "result and, if eligible, the drafted claim letter for the user to review — do NOT treat this as sent or " +
+      "approved, it always needs a separate explicit decision.",
     input_schema: {
       type: "object",
       properties: {
-        flightNumber: { type: "string", description: "IATA flight number, e.g. BA123" },
-        date: { type: "string", description: "Scheduled departure date, YYYY-MM-DD" },
-        departureAirportIata: { type: "string" },
-        arrivalAirportIata: { type: "string" },
-        carrierCode: { type: "string", description: "IATA carrier code, e.g. BA" },
+        segments: {
+          type: "array",
+          description: "Flight segments in order, first departure to final arrival.",
+          items: {
+            type: "object",
+            properties: {
+              flightNumber: { type: "string", description: "IATA flight number, e.g. TK1867" },
+              date: { type: "string", description: "Scheduled departure date of this segment, YYYY-MM-DD" },
+              departureAirportIata: { type: "string", description: "Optional — looked up automatically if omitted." },
+              arrivalAirportIata: { type: "string", description: "Optional — looked up automatically if omitted." },
+              carrierCode: {
+                type: "string",
+                description: "Optional IATA carrier code, e.g. TK — derived from the flight number if omitted.",
+              },
+            },
+            required: ["flightNumber", "date"],
+          },
+        },
         bookingReference: { type: "string" },
         passengerFullName: { type: "string" },
       },
-      required: ["flightNumber", "date", "departureAirportIata", "arrivalAirportIata", "carrierCode"],
+      required: ["segments"],
     },
   },
   {
@@ -223,7 +243,7 @@ export class OperatorTools {
       if (!looksLikeBookingEmail(message.bodyText)) {
         continue;
       }
-      const parsed = await extractor(message.bodyText);
+      const parsed = await extractor(message, (filename) => provider.getAttachmentText(message.id, filename));
       candidates.push({
         subject: message.subject,
         from: message.from,
@@ -243,18 +263,27 @@ export class OperatorTools {
   }
 
   private async startClaim(input: StartClaimInput) {
+    if (!input.segments || input.segments.length === 0) {
+      return { error: "start_claim requires at least one segment." };
+    }
+
     const threadId = `claim-${Date.now()}`;
     this.lastThreadId = threadId;
 
     const booking: Booking = {
       bookingReference: input.bookingReference ?? `CHAT-${Date.now()}`,
       passengers: [{ id: "passenger-1", fullName: input.passengerFullName ?? "Unknown Passenger", email: "" }],
-      flightNumber: input.flightNumber,
-      operatingCarrierCode: input.carrierCode,
-      departureAirportIata: input.departureAirportIata,
-      arrivalAirportIata: input.arrivalAirportIata,
-      scheduledDepartureUtc: `${input.date}T00:00:00.000Z`,
-      scheduledArrivalUtc: `${input.date}T00:00:00.000Z`,
+      segments: input.segments.map((s) => ({
+        flightNumber: s.flightNumber,
+        // IATA flight numbers start with the 2-letter carrier code — derive it
+        // when not given rather than asking the user for something already
+        // implied by the flight number they provided.
+        operatingCarrierCode: s.carrierCode ?? s.flightNumber.slice(0, 2).toUpperCase(),
+        ...(s.departureAirportIata ? { departureAirportIata: s.departureAirportIata } : {}),
+        ...(s.arrivalAirportIata ? { arrivalAirportIata: s.arrivalAirportIata } : {}),
+        scheduledDepartureUtc: `${s.date}T00:00:00.000Z`,
+        scheduledArrivalUtc: `${s.date}T00:00:00.000Z`,
+      })),
     };
 
     const result = (await this.graph.invoke(
@@ -342,12 +371,16 @@ interface ScanInboxInput {
   daysBack?: number;
 }
 
-interface StartClaimInput {
+interface StartClaimSegmentInput {
   flightNumber: string;
   date: string;
-  departureAirportIata: string;
-  arrivalAirportIata: string;
-  carrierCode: string;
+  departureAirportIata?: string;
+  arrivalAirportIata?: string;
+  carrierCode?: string;
+}
+
+interface StartClaimInput {
+  segments: StartClaimSegmentInput[];
   bookingReference?: string;
   passengerFullName?: string;
 }

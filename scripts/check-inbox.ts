@@ -58,7 +58,7 @@ async function main() {
         console.log("    (set ANTHROPIC_API_KEY to see the real parsed booking)");
         continue;
       }
-      const parsed = await extractor(message.bodyText);
+      const parsed = await extractor(message, (filename) => provider.getAttachmentText(message.id, filename));
       console.log("    parsed:", parsed ? JSON.stringify(parsed) : "(extractor found no valid booking)");
     }
   }

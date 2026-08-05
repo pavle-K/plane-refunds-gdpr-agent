@@ -28,6 +28,7 @@ export function createIngestNode(deps: IngestNodeDeps) {
         subject: "",
         receivedAtUtc: new Date().toISOString(),
         bodyText: state.rawEmailText,
+        attachments: [],
       },
       deps.extractor,
     );
@@ -39,10 +40,12 @@ export function createIngestNode(deps: IngestNodeDeps) {
     const booking: Booking = {
       bookingReference: parsed.bookingReference,
       passengers: [{ id: "passenger-1", fullName: parsed.passengerFullName, email: "" }],
-      flightNumber: parsed.flightNumber,
-      operatingCarrierCode: parsed.flightNumber.slice(0, 2).toUpperCase(),
-      scheduledDepartureUtc: `${parsed.scheduledDepartureDateUtc}T00:00:00.000Z`,
-      scheduledArrivalUtc: `${parsed.scheduledDepartureDateUtc}T00:00:00.000Z`,
+      segments: parsed.segments.map((s) => ({
+        flightNumber: s.flightNumber,
+        operatingCarrierCode: s.flightNumber.slice(0, 2).toUpperCase(),
+        scheduledDepartureUtc: `${s.scheduledDepartureDateUtc}T00:00:00.000Z`,
+        scheduledArrivalUtc: `${s.scheduledDepartureDateUtc}T00:00:00.000Z`,
+      })),
     };
 
     return { booking };

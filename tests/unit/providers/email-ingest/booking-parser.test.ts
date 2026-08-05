@@ -21,16 +21,19 @@ function buildEmail(fixture: EmailFixture): EmailMessage {
     subject: fixture.subject,
     receivedAtUtc: "2024-06-01T00:00:00.000Z",
     bodyText: fixture.bodyText,
+    attachments: [],
   };
 }
 
 /**
- * Stands in for the real (Stage 2) LLM extractor — a fake, deterministic
+ * Stands in for the real (Stage 2/3) LLM extractor — a fake, deterministic
  * regex-based parser over clearly-labeled fixture fields, in both English and
  * German. No LLM call happens in this test, per CLAUDE.md's testing rules.
+ * Ignores attachments/fetchAttachment — none of the fixtures need them.
  */
 function createFixtureExtractor(): BookingExtractor {
-  return async (text: string): Promise<ParsedBooking | null> => {
+  return async (email, _fetchAttachment): Promise<ParsedBooking | null> => {
+    const text = email.bodyText;
     const refMatch = text.match(/(?:Booking reference|Buchungsnummer|PNR|Confirmation number)[:\s]+([A-Z0-9]{5,8})/i);
     const flightMatch = text.match(/(?:Flight|Flugnummer)[:\s]+([A-Z]{2}\d{2,4})/i);
     const dateMatch = text.match(/(?:Date|Datum)[:\s]+(\d{4}-\d{2}-\d{2})/i);
@@ -42,9 +45,8 @@ function createFixtureExtractor(): BookingExtractor {
 
     return {
       bookingReference: refMatch[1],
-      flightNumber: flightMatch[1],
-      scheduledDepartureDateUtc: dateMatch[1],
       passengerFullName: nameMatch[1].trim(),
+      segments: [{ flightNumber: flightMatch[1], scheduledDepartureDateUtc: dateMatch[1] }],
     };
   };
 }
@@ -70,9 +72,8 @@ describe("parseBookingEmail", () => {
 
     expect(result).toEqual({
       bookingReference: "XR7K2P",
-      flightNumber: "BA123",
-      scheduledDepartureDateUtc: "2024-06-15",
       passengerFullName: "John Smith",
+      segments: [{ flightNumber: "BA123", scheduledDepartureDateUtc: "2024-06-15" }],
     });
   });
 
@@ -82,9 +83,8 @@ describe("parseBookingEmail", () => {
 
     expect(result).toEqual({
       bookingReference: "9F3K7Q",
-      flightNumber: "LH456",
-      scheduledDepartureDateUtc: "2024-07-01",
       passengerFullName: "Anna Müller",
+      segments: [{ flightNumber: "LH456", scheduledDepartureDateUtc: "2024-07-01" }],
     });
   });
 
@@ -102,5 +102,27 @@ describe("parseBookingEmail", () => {
     const email = buildEmail({ subject: "test", bodyText: "Booking reference: ABC123\n(no flight number here)" });
     const result = await parseBookingEmail(email, createFixtureExtractor());
     expect(result).toBeNull();
+  });
+
+  it("passes a no-op attachment fetcher to the extractor when none is given", async () => {
+    const email = buildEmail(loadFixture("ba-booking-confirmation.json"));
+    const extractor = vi.fn<BookingExtractor>().mockResolvedValue(null);
+
+    await parseBookingEmail(email, extractor);
+
+    expect(extractor).toHaveBeenCalledTimes(1);
+    const fetchAttachment = extractor.mock.calls[0]?.[1];
+    const result = await fetchAttachment!("anything.pdf");
+    expect(result.ok).toBe(false);
+  });
+
+  it("forwards an explicitly provided attachment fetcher to the extractor", async () => {
+    const email = buildEmail(loadFixture("ba-booking-confirmation.json"));
+    const extractor = vi.fn<BookingExtractor>().mockResolvedValue(null);
+    const fetchAttachment = vi.fn().mockResolvedValue({ ok: true, value: "attachment text" });
+
+    await parseBookingEmail(email, extractor, fetchAttachment);
+
+    expect(extractor.mock.calls[0]?.[1]).toBe(fetchAttachment);
   });
 });

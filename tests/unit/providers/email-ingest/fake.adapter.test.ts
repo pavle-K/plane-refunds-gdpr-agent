@@ -8,6 +8,7 @@ const OLD: EmailMessage = {
   subject: "old",
   receivedAtUtc: "2024-01-01T00:00:00.000Z",
   bodyText: "old",
+  attachments: [],
 };
 
 const NEW: EmailMessage = {
@@ -16,6 +17,7 @@ const NEW: EmailMessage = {
   subject: "new",
   receivedAtUtc: "2024-06-01T00:00:00.000Z",
   bodyText: "new",
+  attachments: [],
 };
 
 const NEWEST: EmailMessage = {
@@ -24,6 +26,7 @@ const NEWEST: EmailMessage = {
   subject: "newest",
   receivedAtUtc: "2024-09-01T00:00:00.000Z",
   bodyText: "newest",
+  attachments: [],
 };
 
 describe("FakeEmailIngestAdapter", () => {
@@ -58,5 +61,28 @@ describe("FakeEmailIngestAdapter", () => {
     const adapter = new FakeEmailIngestAdapter();
     const result = await adapter.listRecentMessages({ sinceUtc: "2024-01-01T00:00:00.000Z" });
     expect(result).toEqual({ ok: true, value: { messages: [], truncated: false } });
+  });
+});
+
+describe("FakeEmailIngestAdapter — attachments", () => {
+  it("returns seeded attachment text for the exact messageId/filename pair", async () => {
+    const adapter = new FakeEmailIngestAdapter();
+    adapter.seedAttachmentText("msg-pdf", "Receipt.pdf", "Turkish Airlines • TK1867");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "Receipt.pdf");
+
+    expect(result).toEqual({ ok: true, value: "Turkish Airlines • TK1867" });
+  });
+
+  it("returns not_found for an unseeded messageId/filename pair", async () => {
+    const adapter = new FakeEmailIngestAdapter();
+    adapter.seedAttachmentText("msg-pdf", "Receipt.pdf", "some text");
+
+    const result = await adapter.getAttachmentText("msg-pdf", "does-not-exist.pdf");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.type).toBe("not_found");
+    }
   });
 });

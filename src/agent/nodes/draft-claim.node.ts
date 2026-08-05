@@ -19,8 +19,8 @@ const draftSchema = z.object({ letterText: z.string() });
  */
 export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {
-    if (!state.booking || !state.flightStatus || state.compensationCents === null) {
-      throw new Error("draftClaim: booking, flightStatus, and compensationCents are required");
+    if (!state.booking || state.flightStatuses.length === 0 || state.compensationCents === null) {
+      throw new Error("draftClaim: booking, flightStatuses, and compensationCents are required");
     }
 
     const isRebuttal = state.responseClassification?.category === "rejected";
@@ -29,15 +29,18 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       booking: {
         bookingReference: state.booking.bookingReference,
         passengerFullName: state.booking.passengers[0]?.fullName ?? null,
-        flightNumber: state.booking.flightNumber,
       },
-      flight: {
-        departureAirportIata: state.flightStatus.departureAirportIata,
-        arrivalAirportIata: state.flightStatus.arrivalAirportIata,
-        scheduledDepartureUtc: state.flightStatus.scheduledDepartureUtc,
-        delayMinutesAtArrival: state.flightStatus.delayMinutesAtArrival,
-        status: state.flightStatus.status,
-      },
+      // Full itinerary, in order — the letter should describe the whole
+      // original-departure-to-final-destination trip, not just one leg
+      // (Folkerts v Air France, C-11/11: this is one claim for one journey).
+      itinerary: state.flightStatuses.map((s) => ({
+        flightNumber: s.flightNumber,
+        departureAirportIata: s.departureAirportIata,
+        arrivalAirportIata: s.arrivalAirportIata,
+        scheduledDepartureUtc: s.scheduledDepartureUtc,
+        delayMinutesAtArrival: s.delayMinutesAtArrival,
+        status: s.status,
+      })),
       compensationCents: state.compensationCents,
       eligibilityReasoning: state.eligibilityReason,
       evidence: {

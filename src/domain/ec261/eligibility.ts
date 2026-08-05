@@ -5,15 +5,35 @@ import {
 
 export type DisruptionType = "delay" | "cancellation" | "denied_boarding";
 
+/**
+ * All fields here are ITINERARY-WIDE, not per-segment — this matters as soon as
+ * a booking has a connection. Per Folkerts v Air France (C-11/11), a connecting
+ * itinerary is judged as a single trip: delay is measured at the FINAL
+ * destination's arrival, never an intermediate leg. A delay on an early segment
+ * that's absorbed before the final arrival is NOT compensable; a delay on any
+ * segment that causes the final arrival to be 3+ hours late makes the WHOLE
+ * itinerary eligible — there is no such thing as "a claim for just one leg."
+ * Combining multiple segments into these fields is the caller's job (see
+ * check-eligibility.node.ts); this function only ever sees the combined result.
+ */
 export interface EligibilityInput {
   disruptionType: DisruptionType;
-  /** Required when disruptionType is "delay". Measured on ARRIVAL, never departure. */
+  /** Required when disruptionType is "delay". The delay at the FINAL destination
+   * of the whole itinerary — never an intermediate segment, never departure. */
   delayMinutesAtArrival?: number;
   /** Required when disruptionType is "cancellation". */
   cancellationNoticeDays?: number;
+  /** Whether the FIRST segment's departure airport is in the EU. */
   departureCountryIsEU: boolean;
+  /** Whether the LAST segment's arrival airport is in the EU. */
   arrivalCountryIsEU: boolean;
-  /** Nationality of the airline actually operating the flight (not the marketing carrier). */
+  /**
+   * Nationality of the operating carrier of the LAST segment (the one actually
+   * arriving in the EU) — the most defensible reading of Article 3(1)(b) for a
+   * connecting itinerary, but flagged as a genuine area of legal nuance: which
+   * carrier's nationality controls when different carriers operate different
+   * legs isn't settled beyond doubt. Verify with counsel for interline cases.
+   */
   operatingCarrierIsEU: boolean;
 }
 

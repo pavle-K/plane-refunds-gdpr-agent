@@ -49,6 +49,8 @@ const AIRPORTS: Record<string, AirportCoordinates> = {
   CPH: { iata: "CPH", lat: 55.618, lon: 12.656 },
   HEL: { iata: "HEL", lat: 60.3172, lon: 24.9633 },
   PRG: { iata: "PRG", lat: 50.1008, lon: 14.26 },
+  CGK: { iata: "CGK", lat: -6.1256, lon: 106.6558 },
+  VCE: { iata: "VCE", lat: 45.5053, lon: 12.3519 },
 };
 
 export class UnknownAirportError extends Error {

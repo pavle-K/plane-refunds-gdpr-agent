@@ -44,6 +44,8 @@ const AIRPORT_REFERENCE: Record<string, AirportReference> = {
   CPH: { icao: "EKCH", countryIsEu: true },
   HEL: { icao: "EFHK", countryIsEu: true },
   PRG: { icao: "LKPR", countryIsEu: true },
+  CGK: { icao: "WIII", countryIsEu: false }, // Indonesia
+  VCE: { icao: "LIPZ", countryIsEu: true },
 };
 
 export class UnknownAirportReferenceError extends Error {

@@ -1,8 +1,10 @@
 import { ok, err, type Result } from "../../lib/result.js";
+import { extractPdfText } from "../../lib/pdf-text.js";
 import type {
   EmailIngestProvider,
   EmailIngestQuery,
   EmailListResult,
+  EmailAttachment,
   EmailIngestError,
 } from "./email-ingest.port.js";
 
@@ -22,17 +24,33 @@ const PAGE_SIZE = 100;
 // Injectable (see constructor) so tests can exercise the truncation path.
 const DEFAULT_MAX_MESSAGES = 2000;
 
+interface GraphAttachmentMeta {
+  name: string;
+  contentType: string;
+}
+
 interface GraphMessage {
   id: string;
   subject: string;
   receivedDateTime: string;
   from?: { emailAddress?: { address?: string } };
   body?: { content?: string };
+  attachments?: GraphAttachmentMeta[];
 }
 
 interface GraphMessagesResponse {
   value: GraphMessage[];
   "@odata.nextLink"?: string;
+}
+
+interface GraphAttachmentFull {
+  name: string;
+  contentType: string;
+  contentBytes: string;
+}
+
+interface GraphAttachmentsResponse {
+  value: GraphAttachmentFull[];
 }
 
 export class OutlookAdapter implements EmailIngestProvider {
@@ -52,6 +70,7 @@ export class OutlookAdapter implements EmailIngestProvider {
     const initialUrl = new URL(API_BASE);
     initialUrl.searchParams.set("$filter", filterTerms.join(" and "));
     initialUrl.searchParams.set("$select", "id,from,subject,receivedDateTime,body");
+    initialUrl.searchParams.set("$expand", "attachments($select=name,contentType)");
     initialUrl.searchParams.set("$top", String(PAGE_SIZE));
 
     const graphMessages: GraphMessage[] = [];
@@ -59,7 +78,10 @@ export class OutlookAdapter implements EmailIngestProvider {
     let truncated = false;
 
     while (nextUrl) {
-      const pageResult: Result<GraphMessagesResponse, EmailIngestError> = await this.fetchPage(nextUrl, accessToken);
+      const pageResult: Result<GraphMessagesResponse, EmailIngestError> = await this.authedFetch<GraphMessagesResponse>(
+        nextUrl,
+        accessToken,
+      );
       if (!pageResult.ok) {
         return pageResult;
       }
@@ -78,12 +100,49 @@ export class OutlookAdapter implements EmailIngestProvider {
       subject: m.subject,
       receivedAtUtc: new Date(m.receivedDateTime).toISOString(),
       bodyText: m.body?.content ?? "",
+      attachments: (m.attachments ?? []).map(
+        (a): EmailAttachment => ({ filename: a.name, mimeType: a.contentType }),
+      ),
     }));
 
     return ok({ messages, truncated });
   }
 
-  private async fetchPage(url: string, accessToken: string): Promise<Result<GraphMessagesResponse, EmailIngestError>> {
+  async getAttachmentText(messageId: string, filename: string): Promise<Result<string, EmailIngestError>> {
+    const accessToken = await this.getAccessToken();
+
+    const result = await this.authedFetch<GraphAttachmentsResponse>(
+      `${API_BASE}/${messageId}/attachments`,
+      accessToken,
+    );
+    if (!result.ok) {
+      return result;
+    }
+
+    const attachment = result.value.value.find((a) => a.name === filename);
+    if (!attachment) {
+      return err({ type: "not_found", message: `No attachment named "${filename}" on message ${messageId}` });
+    }
+
+    const buffer = Buffer.from(attachment.contentBytes, "base64");
+
+    if (attachment.contentType === "application/pdf") {
+      try {
+        return ok(await extractPdfText(buffer));
+      } catch (cause) {
+        return err({ type: "upstream_error", message: `Failed to extract PDF text: ${String(cause)}` });
+      }
+    }
+    if (attachment.contentType.startsWith("text/")) {
+      return ok(buffer.toString("utf-8"));
+    }
+    return err({
+      type: "unsupported_attachment",
+      message: `Attachment "${filename}" has unsupported type ${attachment.contentType} — only PDF and text are supported`,
+    });
+  }
+
+  private async authedFetch<T>(url: string, accessToken: string): Promise<Result<T, EmailIngestError>> {
     let response: Response;
     try {
       response = await fetch(url, {
@@ -108,7 +167,7 @@ export class OutlookAdapter implements EmailIngestProvider {
     }
 
     try {
-      return ok((await response.json()) as GraphMessagesResponse);
+      return ok((await response.json()) as T);
     } catch (cause) {
       return err({ type: "upstream_error", message: `Malformed Microsoft Graph response: ${String(cause)}` });
     }

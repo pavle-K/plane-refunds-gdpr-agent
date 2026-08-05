@@ -15,8 +15,19 @@ import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js
 import { TOOL_DEFINITIONS, OperatorTools } from "../src/operator/tools.js";
 import { env } from "../src/config/env.js";
 
-const SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("../src/operator/prompt.md", import.meta.url)), "utf-8");
+const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("../src/operator/prompt.md", import.meta.url)), "utf-8");
 const MODEL = "claude-sonnet-5";
+
+/**
+ * The model has no other way to know today's date — without this it falls back to
+ * guessing from training data, which silently resolves things like "check March"
+ * to the wrong year. Computed fresh per call (not baked in once) so a
+ * long-running session stays correct if it crosses midnight.
+ */
+function buildSystemPrompt(): string {
+  const now = new Date();
+  return `${BASE_SYSTEM_PROMPT}\n\n## Current date and time\n\nRight now it is ${now.toISOString()} (UTC) — today's date is ${now.toISOString().slice(0, 10)}. Always resolve dates the user gives you (a bare month name, "last week", "this year", a relative range) against THIS date, never against your training data or an assumed year.`;
+}
 
 async function main() {
   if (!env.ANTHROPIC_API_KEY) {
@@ -50,7 +61,7 @@ async function main() {
       const response = await client.messages.create({
         model: MODEL,
         max_tokens: 2048,
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt(),
         tools: TOOL_DEFINITIONS,
         messages,
       });

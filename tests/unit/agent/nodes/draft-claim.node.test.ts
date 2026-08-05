@@ -9,10 +9,14 @@ import type { FlightStatusResult } from "../../../../src/providers/flight-status
 const BOOKING: Booking = {
   bookingReference: "ABC123",
   passengers: [{ id: "p1", fullName: "Jane Doe", email: "jane@example.com" }],
-  flightNumber: "LH456",
-  operatingCarrierCode: "LH",
-  scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
-  scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+  segments: [
+    {
+      flightNumber: "LH456",
+      operatingCarrierCode: "LH",
+      scheduledDepartureUtc: "2024-06-15T09:00:00.000Z",
+      scheduledArrivalUtc: "2024-06-15T18:00:00.000Z",
+    },
+  ],
 };
 
 const FLIGHT_STATUS: FlightStatusResult = {
@@ -40,7 +44,7 @@ describe("draft-claim node", () => {
     const node = createDraftClaimNode(deps);
 
     const result = await node(
-      buildState({ booking: BOOKING, flightStatus: FLIGHT_STATUS, compensationCents: 60000 }),
+      buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], compensationCents: 60000 }),
     );
 
     expect(result.draftText).toBe("Dear Lufthansa, ...");
@@ -55,7 +59,7 @@ describe("draft-claim node", () => {
 
     const state = buildState({
       booking: BOOKING,
-      flightStatus: FLIGHT_STATUS,
+      flightStatuses: [FLIGHT_STATUS],
       compensationCents: 60000,
       airlineReplyText: "We reject this claim due to a technical fault.",
       responseClassification: { category: "rejected", reasoning: "r", requestedInfo: null },

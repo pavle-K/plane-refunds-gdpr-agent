@@ -41,7 +41,7 @@ describe("StaticAirlineDirectoryAdapter", () => {
     // Guards against someone quietly "fixing" one entry with a guessed real address
     // instead of sourcing it properly — every entry must go through the same review.
     const adapter = new StaticAirlineDirectoryAdapter();
-    for (const code of ["LH", "AF", "KL", "IB", "AZ", "FR", "EI", "TP", "BA", "LX"]) {
+    for (const code of ["LH", "AF", "KL", "IB", "AZ", "FR", "EI", "TP", "BA", "LX", "TK"]) {
       const result = await adapter.getAirline(code);
       expect(result.ok).toBe(true);
       if (result.ok) {

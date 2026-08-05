@@ -1,9 +1,11 @@
 import { ok, err, type Result } from "../../lib/result.js";
 import { mapWithConcurrency } from "../../lib/concurrency.js";
+import { extractPdfText } from "../../lib/pdf-text.js";
 import type {
   EmailIngestProvider,
   EmailIngestQuery,
   EmailListResult,
+  EmailAttachment,
   EmailIngestError,
 } from "./email-ingest.port.js";
 
@@ -33,7 +35,8 @@ const DEFAULT_MAX_MESSAGES = 2000;
 
 interface GmailMessagePart {
   mimeType: string;
-  body?: { data?: string };
+  filename?: string;
+  body?: { data?: string; attachmentId?: string };
   parts?: GmailMessagePart[];
 }
 
@@ -47,17 +50,45 @@ interface GmailListResponse {
   nextPageToken?: string;
 }
 
-function decodeBase64Url(data: string): string {
+interface GmailAttachmentResponse {
+  data: string;
+}
+
+function decodeBase64Url(data: string): Buffer {
   const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(base64, "base64").toString("utf-8");
+  return Buffer.from(base64, "base64");
 }
 
 function extractPlainTextBody(part: GmailMessagePart): string | null {
   if (part.mimeType === "text/plain" && part.body?.data) {
-    return decodeBase64Url(part.body.data);
+    return decodeBase64Url(part.body.data).toString("utf-8");
   }
   for (const child of part.parts ?? []) {
     const found = extractPlainTextBody(child);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function extractAttachments(part: GmailMessagePart): EmailAttachment[] {
+  const attachments: EmailAttachment[] = [];
+  if (part.filename && part.body?.attachmentId) {
+    attachments.push({ filename: part.filename, mimeType: part.mimeType });
+  }
+  for (const child of part.parts ?? []) {
+    attachments.push(...extractAttachments(child));
+  }
+  return attachments;
+}
+
+function findAttachmentPart(part: GmailMessagePart, filename: string): GmailMessagePart | null {
+  if (part.filename === filename && part.body?.attachmentId) {
+    return part;
+  }
+  for (const child of part.parts ?? []) {
+    const found = findAttachmentPart(child, filename);
     if (found) {
       return found;
     }
@@ -106,10 +137,51 @@ export class GmailAdapter implements EmailIngestProvider {
         subject: getHeader(detail.payload.headers, "Subject"),
         receivedAtUtc: new Date(getHeader(detail.payload.headers, "Date") || Date.now()).toISOString(),
         bodyText: extractPlainTextBody(detail.payload) ?? "",
+        attachments: extractAttachments(detail.payload),
       };
     });
 
     return ok({ messages, truncated });
+  }
+
+  async getAttachmentText(messageId: string, filename: string): Promise<Result<string, EmailIngestError>> {
+    const accessToken = await this.getAccessToken();
+
+    const detailResult = await this.authedFetch(new URL(`${API_BASE}/messages/${messageId}?format=full`), accessToken);
+    if (!detailResult.ok) {
+      return detailResult;
+    }
+    const detail = detailResult.value as GmailMessageDetail;
+
+    const part = findAttachmentPart(detail.payload, filename);
+    if (!part?.body?.attachmentId) {
+      return err({ type: "not_found", message: `No attachment named "${filename}" on message ${messageId}` });
+    }
+
+    const attachmentResult = await this.authedFetch(
+      new URL(`${API_BASE}/messages/${messageId}/attachments/${part.body.attachmentId}`),
+      accessToken,
+    );
+    if (!attachmentResult.ok) {
+      return attachmentResult;
+    }
+    const { data } = attachmentResult.value as GmailAttachmentResponse;
+    const buffer = decodeBase64Url(data);
+
+    if (part.mimeType === "application/pdf") {
+      try {
+        return ok(await extractPdfText(buffer));
+      } catch (cause) {
+        return err({ type: "upstream_error", message: `Failed to extract PDF text: ${String(cause)}` });
+      }
+    }
+    if (part.mimeType.startsWith("text/")) {
+      return ok(buffer.toString("utf-8"));
+    }
+    return err({
+      type: "unsupported_attachment",
+      message: `Attachment "${filename}" has unsupported type ${part.mimeType} — only PDF and text are supported`,
+    });
   }
 
   private async listAllMessageIds(
