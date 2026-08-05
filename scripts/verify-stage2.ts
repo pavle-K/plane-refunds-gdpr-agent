@@ -16,7 +16,7 @@ import { FakeDisruptionAdapter } from "../src/providers/disruption/fake.adapter.
 import { StaticAirlineDirectoryAdapter } from "../src/providers/airline-directory/static.adapter.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/fake.adapter.js";
 import { FakePaymentsAdapter } from "../src/providers/payments/fake.adapter.js";
-import { FakeLlmClient } from "../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../src/agent/llm/fake.adapter.js";
 import { DbAuditLog } from "../src/compliance/audit-log.js";
 import { ok } from "../src/lib/result.js";
 import type { Booking } from "../src/domain/claim/claim.types.js";

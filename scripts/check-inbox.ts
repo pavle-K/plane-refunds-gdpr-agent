@@ -1,7 +1,7 @@
 /**
  * Sanity check for a connected inbox (npm run email:connect -- gmail|outlook
  * first). Lists recent messages, flags which ones look like booking
- * confirmations, and — if ANTHROPIC_API_KEY is set — shows what the real
+ * confirmations, and — if LLM_PROVIDER's key/config is set — shows what the real
  * extractor would parse out of each one. Doesn't touch the claim pipeline.
  *
  * Usage: npx tsx scripts/check-inbox.ts [--days 90]
@@ -11,6 +11,7 @@ import { createEmailIngestProvider } from "../src/providers/email-ingest/index.j
 import { looksLikeBookingEmail } from "../src/providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
+import { env } from "../src/config/env.js";
 import { pool } from "../src/db/client.js";
 
 function getArg(name: string): string | undefined {
@@ -55,7 +56,7 @@ async function main() {
 
     if (isBooking) {
       if (llm instanceof FakeLlmClient) {
-        console.log("    (set ANTHROPIC_API_KEY to see the real parsed booking)");
+        console.log(`    (configure LLM_PROVIDER=${env.LLM_PROVIDER}'s key/config to see the real parsed booking)`);
         continue;
       }
       const parsed = await extractor(message, (filename) => provider.getAttachmentText(message.id, filename));

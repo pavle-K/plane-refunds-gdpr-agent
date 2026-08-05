@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createScoreClaimNode } from "../../../../src/agent/nodes/score-claim.node.js";
 import { FakeWeatherAdapter, buildClearSkyObservation } from "../../../../src/providers/weather/fake.adapter.js";
 import { FakeDisruptionAdapter } from "../../../../src/providers/disruption/fake.adapter.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { ok } from "../../../../src/lib/result.js";
 import { buildState } from "../../../helpers/build-state.js";

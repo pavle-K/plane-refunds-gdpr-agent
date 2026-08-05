@@ -12,6 +12,7 @@ import { getCheckpointer } from "../src/agent/checkpointer.js";
 import { createRealGraphDeps } from "../src/agent/real-deps.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
 import { FakeLlmClient } from "../src/agent/llm/index.js";
+import { env } from "../src/config/env.js";
 
 function getArg(name: string): string {
   const idx = process.argv.indexOf(`--${name}`);
@@ -62,9 +63,9 @@ async function main() {
       const airlineReplyText = await rl.question("Paste the airline's reply text:\n> ");
       resumeValue = { type: "reply", airlineReplyText };
       if (llm instanceof FakeLlmClient) {
-        console.log("No ANTHROPIC_API_KEY — queuing a generic 'accepted' classification as a fallback.");
-        console.log("(If the real reply is a rejection, classification will be wrong without a real key.)");
-        llm.enqueueJson({ category: "accepted", reasoning: "Generic fallback — no ANTHROPIC_API_KEY set.", requestedInfo: null });
+        console.log(`LLM_PROVIDER=${env.LLM_PROVIDER}'s key/config isn't set — queuing a generic 'accepted' classification as a fallback.`);
+        console.log("(If the real reply is a rejection, classification will be wrong without a real provider configured.)");
+        llm.enqueueJson({ category: "accepted", reasoning: "Generic fallback — no real LLM provider configured.", requestedInfo: null });
       }
     } else {
       resumeValue = { type: "timeout" };

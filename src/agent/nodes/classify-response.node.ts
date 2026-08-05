@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { GraphStateType } from "../state.js";
-import type { LlmClient } from "../llm/client.js";
+import type { LlmClient } from "../llm/llm.port.js";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";

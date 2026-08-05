@@ -12,9 +12,28 @@ const envSchema = z.object({
     .min(1, "DATABASE_URL is required")
     .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must be a postgres connection string"),
 
+  // Which LLM provider backs createLlmClient() — see src/agent/llm/index.ts.
+  // Switching providers is this value (+ optionally LLM_MODEL); no code changes.
+  LLM_PROVIDER: z.enum(["anthropic", "openai", "google", "xai", "openai-compatible"]).default("anthropic"),
+  // Overrides the provider's default model id (src/agent/llm/model-registry.ts).
+  LLM_MODEL: z.string().min(1).optional(),
+
   // Required starting Stage 2 (LLM calls). Optional for now so Stage 0/1 work can boot
-  // without every provider key present.
+  // without every provider key present. Only the key for the active LLM_PROVIDER
+  // actually needs to be set.
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  GOOGLE_API_KEY: z.string().min(1).optional(),
+  XAI_API_KEY: z.string().min(1).optional(),
+
+  // Generic slot for LLM_PROVIDER=openai-compatible — any endpoint that speaks
+  // OpenAI's Chat Completions wire format: hosted (OpenRouter, Groq, Together,
+  // DeepSeek's own API, ...) or self-hosted (Ollama, vLLM, LM Studio). Covers
+  // every open-weight model this way, so there's no per-model adapter to add.
+  OPENAI_COMPATIBLE_BASE_URL: z.string().min(1).optional(),
+  // Most local runtimes (e.g. Ollama) ignore this — leave unset for those.
+  OPENAI_COMPATIBLE_API_KEY: z.string().min(1).optional(),
+  OPENAI_COMPATIBLE_MODEL: z.string().min(1).optional(),
 
   // Required starting Stage 1 (data providers). Optional for now.
   FLIGHT_DATA_API_KEY: z.string().min(1).optional(),

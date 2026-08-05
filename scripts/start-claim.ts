@@ -91,9 +91,9 @@ async function main() {
     console.log("   Using REAL AeroAPI flight-status lookup.");
   }
 
-  console.log(`   LLM: ${env.ANTHROPIC_API_KEY ? "REAL Anthropic call" : "FAKE (no ANTHROPIC_API_KEY set)"}`);
+  console.log(`   LLM: ${llm instanceof FakeLlmClient ? `FAKE (LLM_PROVIDER=${env.LLM_PROVIDER}, but its key/config isn't set)` : `REAL call via LLM_PROVIDER=${env.LLM_PROVIDER}`}`);
   if (llm instanceof FakeLlmClient) {
-    console.log("   No ANTHROPIC_API_KEY — queuing generic canned score/draft responses so the script can still run.");
+    console.log("   Queuing generic canned score/draft responses so the script can still run.");
     llm.enqueueJson({
       successLikelihood: 0.5,
       confidence: 0.3,
@@ -101,7 +101,7 @@ async function main() {
       citedEvidence: [],
     });
     llm.enqueueJson({
-      letterText: `[GENERIC PLACEHOLDER — set ANTHROPIC_API_KEY for a real draft]\n\nDear ${carrierCode},\n\nI am writing to claim EC261 compensation for flight ${flightNumber} on ${scheduledDepartureDateUtc}, booking reference ${bookingReference}.`,
+      letterText: `[GENERIC PLACEHOLDER — configure LLM_PROVIDER's key/config for a real draft]\n\nDear ${carrierCode},\n\nI am writing to claim EC261 compensation for flight ${flightNumber} on ${scheduledDepartureDateUtc}, booking reference ${bookingReference}.`,
     });
   }
 

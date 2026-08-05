@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LlmClient, LlmToolDefinition } from "../../agent/llm/client.js";
+import type { LlmClient, LlmToolDefinition } from "../../agent/llm/llm.port.js";
 import { callStructuredWithTools } from "../../agent/llm/structured.js";
 import { prompts } from "../../agent/prompts/index.js";
 import type { BookingExtractor } from "./booking-parser.js";

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
 import { callStructured, callStructuredWithTools, StructuredLlmOutputError } from "../../../../src/agent/llm/structured.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 
 const schema = z.object({ eligible: z.boolean(), confidence: z.number() });
 
