@@ -5,6 +5,7 @@
  * extractor would parse out of each one. Doesn't touch the claim pipeline.
  *
  * Usage: npx tsx scripts/check-inbox.ts [--days 90]
+ *        npx tsx scripts/check-inbox.ts --start 2024-02-01 --end 2024-03-31
  */
 import { createEmailIngestProvider } from "../src/providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../src/providers/email-ingest/booking-parser.js";
@@ -12,14 +13,18 @@ import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-ext
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
 import { pool } from "../src/db/client.js";
 
-function getArg(name: string, fallback: string): string {
+function getArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
-  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1]! : fallback;
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : undefined;
 }
 
 async function main() {
-  const days = Number(getArg("days", "90"));
-  const sinceUtc = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const startArg = getArg("start");
+  const endArg = getArg("end");
+  const days = Number(getArg("days") ?? "90");
+
+  const sinceUtc = startArg ? `${startArg}T00:00:00.000Z` : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const untilUtc = endArg ? `${endArg}T23:59:59.999Z` : undefined;
 
   const provider = await createEmailIngestProvider();
   console.log(`Using: ${provider.constructor.name}`);
@@ -29,8 +34,8 @@ async function main() {
     return;
   }
 
-  console.log(`Listing messages since ${sinceUtc}...\n`);
-  const result = await provider.listRecentMessages({ sinceUtc });
+  console.log(`Listing messages from ${sinceUtc}${untilUtc ? ` to ${untilUtc}` : ""}...\n`);
+  const result = await provider.listRecentMessages({ sinceUtc, ...(untilUtc ? { untilUtc } : {}) });
 
   if (!result.ok) {
     console.error("FAILED to list messages:", result.error);
@@ -38,12 +43,13 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Found ${result.value.length} message(s).\n`);
+  const { messages, truncated } = result.value;
+  console.log(`Found ${messages.length} message(s).${truncated ? " ⚠️  TRUNCATED — more messages exist beyond the safety cap; narrow the date range for complete results." : ""}\n`);
 
   const llm = createLlmClient();
   const extractor = createLlmBookingExtractor(llm);
 
-  for (const message of result.value) {
+  for (const message of messages) {
     const isBooking = looksLikeBookingEmail(message.bodyText);
     console.log(`- [${isBooking ? "BOOKING?" : "skip"}] ${message.subject}  (from: ${message.from}, ${message.receivedAtUtc})`);
 

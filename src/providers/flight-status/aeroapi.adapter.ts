@@ -10,17 +10,19 @@ import type {
 /**
  * Real adapter against FlightAware's AeroAPI v4.
  *
- * UNVERIFIED against a live response — unlike the weather adapter (checked against
- * the real IEM endpoint before being written), AeroAPI requires a paid/signup API
- * key we don't have yet. The mapping below reflects AeroAPI v4's documented schema
- * as best understood; treat it as a first draft and re-verify every field against
- * a real response the moment a FLIGHT_DATA_API_KEY is available — a silently wrong
- * field mapping here produces a wrong eligibility/compensation decision.
+ * Verified against a live call — every field mapped below (ident_iata,
+ * operator_iata, origin/destination.code_iata, scheduled_in/actual_in) matches
+ * a real response exactly. Two real constraints found the same way, not
+ * documented anywhere obvious beforehand:
+ *   - `start`/`end` must not be equal — AeroAPI rejects a same-day range.
+ *   - On this plan tier, `start` can't be more than ~10 days in the past
+ *     ("Invalid start bound: time is too far in the past").
  *
  * "Arrival" is deliberately the gate time (scheduled_in/actual_in), not runway
  * touchdown (scheduled_on/actual_on): CJEU C-452/13 (Germanwings v Henning) holds
  * that "arrival time" for EC261 purposes is when a door of the aircraft is opened,
- * i.e. gate arrival, not wheels-on.
+ * i.e. gate arrival, not wheels-on. Confirmed live: scheduled_in/actual_in are
+ * genuinely distinct fields from scheduled_on/actual_on in the real response.
  */
 const BASE_URL = "https://aeroapi.flightaware.com/aeroapi";
 
@@ -94,9 +96,15 @@ export class AeroApiFlightStatusAdapter implements FlightStatusProvider {
   async getFlightStatus(
     query: FlightStatusQuery,
   ): Promise<Result<FlightStatusResult, FlightStatusError>> {
+    // AeroAPI rejects start === end ("end date must be later than start date") —
+    // confirmed against a live call. Use a full day window: start of the given
+    // date through start of the next day.
+    const endDate = new Date(`${query.scheduledDepartureDateUtc}T00:00:00Z`);
+    endDate.setUTCDate(endDate.getUTCDate() + 1);
+
     const url = new URL(`${BASE_URL}/flights/${encodeURIComponent(query.flightNumber)}`);
     url.searchParams.set("start", query.scheduledDepartureDateUtc);
-    url.searchParams.set("end", query.scheduledDepartureDateUtc);
+    url.searchParams.set("end", endDate.toISOString().slice(0, 10));
 
     let response: Response;
     try {
@@ -115,7 +123,8 @@ export class AeroApiFlightStatusAdapter implements FlightStatusProvider {
       return err({ type: "rate_limited", message: "AeroAPI rate-limited the request" });
     }
     if (!response.ok) {
-      return err({ type: "upstream_error", message: `AeroAPI returned HTTP ${response.status}` });
+      const bodyText = await response.text();
+      return err({ type: "upstream_error", message: `AeroAPI returned HTTP ${response.status}: ${bodyText}` });
     }
 
     let body: AeroApiFlightsResponse;

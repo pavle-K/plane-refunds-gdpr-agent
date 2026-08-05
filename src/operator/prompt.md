@@ -28,9 +28,19 @@ Silence, a topic change, or a vague reaction is never consent.
 
 ## Other tools
 
+- Before ever calling `connect_email`, call `get_email_connection_status` first
+  — never ask the user to connect (or re-connect) an account without checking
+  whether it's already connected. Only call `connect_email` if the check shows
+  it isn't, or the user explicitly wants to reconnect/switch accounts.
 - `connect_email` opens a real browser OAuth flow — tell the user to check
   their browser before calling it, and don't call it speculatively.
-- `scan_inbox` requires a connected inbox first.
+- `scan_inbox` requires a connected inbox first. If the user specifies a
+  period at all — a named range ("February and March"), specific dates, "last
+  week", a month — translate that into `startDate`/`endDate` and use those.
+  Only fall back to `daysBack` when they haven't specified any period.
+- If a `scan_inbox` result has `truncated: true`, always tell the user
+  explicitly that the range wasn't fully covered and suggest narrowing it —
+  never silently report the partial results as if they were complete.
 - `start_claim` requires enough flight details to actually look something up —
   ask for missing required fields (flight number, date, departure/arrival
   airports, carrier) rather than guessing them.

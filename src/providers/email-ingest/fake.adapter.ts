@@ -3,6 +3,7 @@ import type {
   EmailIngestProvider,
   EmailIngestQuery,
   EmailMessage,
+  EmailListResult,
   EmailIngestError,
 } from "./email-ingest.port.js";
 
@@ -16,8 +17,13 @@ export class FakeEmailIngestAdapter implements EmailIngestProvider {
 
   async listRecentMessages(
     query: EmailIngestQuery,
-  ): Promise<Result<EmailMessage[], EmailIngestError>> {
+  ): Promise<Result<EmailListResult, EmailIngestError>> {
     const since = new Date(query.sinceUtc).getTime();
-    return ok(this.messages.filter((m) => new Date(m.receivedAtUtc).getTime() > since));
+    const until = query.untilUtc ? new Date(query.untilUtc).getTime() : null;
+    const messages = this.messages.filter((m) => {
+      const receivedAt = new Date(m.receivedAtUtc).getTime();
+      return receivedAt > since && (until === null || receivedAt < until);
+    });
+    return ok({ messages, truncated: false });
   }
 }

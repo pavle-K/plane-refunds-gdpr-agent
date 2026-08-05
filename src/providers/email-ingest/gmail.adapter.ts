@@ -1,18 +1,35 @@
 import { ok, err, type Result } from "../../lib/result.js";
-import type { EmailIngestProvider, EmailIngestQuery, EmailMessage, EmailIngestError } from "./email-ingest.port.js";
+import { mapWithConcurrency } from "../../lib/concurrency.js";
+import type {
+  EmailIngestProvider,
+  EmailIngestQuery,
+  EmailListResult,
+  EmailIngestError,
+} from "./email-ingest.port.js";
 
 /**
  * Real adapter against the Gmail API (read-only scope only —
- * https://www.googleapis.com/auth/gmail.readonly). UNVERIFIED against a live
- * response — no connected Gmail account yet. The list→get→parse shape below
- * matches Gmail API v1's documented format; re-verify once scripts/connect-email.ts
- * has been run for real.
+ * https://www.googleapis.com/auth/gmail.readonly). Verified against a live
+ * response — see gmail.adapter.test.ts and the earlier live scan.
  *
- * Gmail's `after:` search operator is DAY granularity, not exact timestamp — a
- * sinceUtc of "14:00" and "23:00" on the same day both just become that day's
- * date. Good enough for polling on a schedule, not for sub-day precision.
+ * Gmail's `after:`/`before:` search operators are DAY granularity, not exact
+ * timestamp — a sinceUtc of "14:00" and "23:00" on the same day both just
+ * become that day's date. Good enough for polling on a schedule or scanning a
+ * date range, not for sub-day precision.
+ *
+ * `messages.list` only returns IDs — full content needs one `messages.get`
+ * call per message, fetched with bounded concurrency below (not sequential,
+ * not unbounded-parallel) since a multi-month scan can easily return
+ * hundreds of messages.
  */
 const API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const LIST_PAGE_SIZE = 500; // Gmail API's max per page
+const DETAIL_FETCH_CONCURRENCY = 8;
+// Safety net against a pathologically broad range (e.g. "since 2015") turning
+// into thousands of individual detail fetches — not expected to be hit for a
+// normal multi-month scan. Injectable (see constructor) so tests can exercise
+// the truncation path without actually hitting 2000 messages.
+const DEFAULT_MAX_MESSAGES = 2000;
 
 interface GmailMessagePart {
   mimeType: string;
@@ -23,6 +40,11 @@ interface GmailMessagePart {
 interface GmailMessageDetail {
   id: string;
   payload: GmailMessagePart & { headers: { name: string; value: string }[] };
+}
+
+interface GmailListResponse {
+  messages?: { id: string }[];
+  nextPageToken?: string;
 }
 
 function decodeBase64Url(data: string): string {
@@ -48,42 +70,86 @@ function getHeader(headers: { name: string; value: string }[], name: string): st
 }
 
 export class GmailAdapter implements EmailIngestProvider {
-  constructor(private readonly getAccessToken: () => Promise<string>) {}
+  constructor(
+    private readonly getAccessToken: () => Promise<string>,
+    private readonly maxMessages: number = DEFAULT_MAX_MESSAGES,
+  ) {}
 
-  async listRecentMessages(query: EmailIngestQuery): Promise<Result<EmailMessage[], EmailIngestError>> {
+  async listRecentMessages(query: EmailIngestQuery): Promise<Result<EmailListResult, EmailIngestError>> {
     const accessToken = await this.getAccessToken();
-    const afterDate = query.sinceUtc.slice(0, 10).replace(/-/g, "/");
-
-    const listUrl = new URL(`${API_BASE}/messages`);
-    listUrl.searchParams.set("q", `after:${afterDate}`);
-
-    const listResult = await this.authedFetch(listUrl, accessToken);
-    if (!listResult.ok) {
-      return listResult;
+    const idsResult = await this.listAllMessageIds(query, accessToken);
+    if (!idsResult.ok) {
+      return idsResult;
+    }
+    const { ids, truncated } = idsResult.value;
+    if (ids.length === 0) {
+      return ok({ messages: [], truncated });
     }
 
-    const listBody = listResult.value as { messages?: { id: string }[] };
-    if (!listBody.messages || listBody.messages.length === 0) {
-      return ok([]);
+    const detailResults = await mapWithConcurrency(ids, DETAIL_FETCH_CONCURRENCY, (id) =>
+      this.authedFetch(new URL(`${API_BASE}/messages/${id}?format=full`), accessToken),
+    );
+
+    const firstError = detailResults.find((r): r is { ok: false; error: EmailIngestError } => !r.ok);
+    if (firstError) {
+      return firstError;
     }
 
-    const messages: EmailMessage[] = [];
-    for (const { id } of listBody.messages) {
-      const detailResult = await this.authedFetch(new URL(`${API_BASE}/messages/${id}?format=full`), accessToken);
-      if (!detailResult.ok) {
-        return detailResult;
+    const messages = detailResults.map((r) => {
+      if (!r.ok) {
+        throw new Error("unreachable: errors already filtered out above");
       }
-      const detail = detailResult.value as GmailMessageDetail;
-      messages.push({
+      const detail = r.value as GmailMessageDetail;
+      return {
         id: detail.id,
         from: getHeader(detail.payload.headers, "From"),
         subject: getHeader(detail.payload.headers, "Subject"),
         receivedAtUtc: new Date(getHeader(detail.payload.headers, "Date") || Date.now()).toISOString(),
         bodyText: extractPlainTextBody(detail.payload) ?? "",
-      });
+      };
+    });
+
+    return ok({ messages, truncated });
+  }
+
+  private async listAllMessageIds(
+    query: EmailIngestQuery,
+    accessToken: string,
+  ): Promise<Result<{ ids: string[]; truncated: boolean }, EmailIngestError>> {
+    const afterDate = query.sinceUtc.slice(0, 10).replace(/-/g, "/");
+    const searchTerms = [`after:${afterDate}`];
+    if (query.untilUtc) {
+      searchTerms.push(`before:${query.untilUtc.slice(0, 10).replace(/-/g, "/")}`);
     }
 
-    return ok(messages);
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    let truncated = false;
+
+    do {
+      const listUrl = new URL(`${API_BASE}/messages`);
+      listUrl.searchParams.set("q", searchTerms.join(" "));
+      listUrl.searchParams.set("maxResults", String(LIST_PAGE_SIZE));
+      if (pageToken) {
+        listUrl.searchParams.set("pageToken", pageToken);
+      }
+
+      const listResult = await this.authedFetch(listUrl, accessToken);
+      if (!listResult.ok) {
+        return listResult;
+      }
+
+      const listBody = listResult.value as GmailListResponse;
+      ids.push(...(listBody.messages ?? []).map((m) => m.id));
+      pageToken = listBody.nextPageToken;
+
+      if (pageToken && ids.length >= this.maxMessages) {
+        truncated = true;
+        break;
+      }
+    } while (pageToken);
+
+    return ok({ ids: ids.slice(0, this.maxMessages), truncated });
   }
 
   private async authedFetch(url: URL, accessToken: string): Promise<Result<unknown, EmailIngestError>> {

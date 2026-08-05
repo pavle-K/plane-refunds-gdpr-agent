@@ -53,12 +53,122 @@ describe("GmailAdapter", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toHaveLength(1);
-      expect(result.value[0]?.from).toBe("noreply@britishairways.com");
-      expect(result.value[0]?.subject).toBe("Your booking confirmation");
-      expect(result.value[0]?.bodyText).toContain("Booking reference: XR7K2P");
-      expect(result.value[0]?.bodyText).not.toContain("HTML version"); // picked text/plain, not text/html
+      expect(result.value.truncated).toBe(false);
+      expect(result.value.messages).toHaveLength(1);
+      expect(result.value.messages[0]?.from).toBe("noreply@britishairways.com");
+      expect(result.value.messages[0]?.subject).toBe("Your booking confirmation");
+      expect(result.value.messages[0]?.bodyText).toContain("Booking reference: XR7K2P");
+      expect(result.value.messages[0]?.bodyText).not.toContain("HTML version"); // picked text/plain, not text/html
     }
+  });
+
+  it("includes a before: term in the search query when untilUtc is given", async () => {
+    const fetchMock = mockGmailFetch();
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+
+    await adapter.listRecentMessages({ sinceUtc: "2024-02-01T00:00:00.000Z", untilUtc: "2024-03-31T23:59:59.000Z" });
+
+    const firstCallUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(firstCallUrl).toContain("after%3A2024%2F02%2F01");
+    expect(firstCallUrl).toContain("before%3A2024%2F03%2F31");
+  });
+
+  it("follows nextPageToken across multiple pages instead of stopping at the first page", async () => {
+    function detailFor(id: string) {
+      return {
+        id,
+        payload: {
+          mimeType: "text/plain",
+          headers: [
+            { name: "From", value: `sender-${id}@example.com` },
+            { name: "Subject", value: `Subject ${id}` },
+          ],
+          body: { data: Buffer.from(`body ${id}`).toString("base64") },
+        },
+      };
+    }
+
+    const fetchMock = vi.fn((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/messages/m1?format=full")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(detailFor("m1")) });
+      }
+      if (urlStr.includes("/messages/m2?format=full")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(detailFor("m2")) });
+      }
+      if (urlStr.includes("/messages/m3?format=full")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(detailFor("m3")) });
+      }
+      // list calls
+      if (urlStr.includes("pageToken=page2")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ messages: [{ id: "m3" }] }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ messages: [{ id: "m1" }, { id: "m2" }], nextPageToken: "page2" }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const adapter = new GmailAdapter(async () => "fake-access-token");
+    const result = await adapter.listRecentMessages({ sinceUtc: "2024-06-01T00:00:00.000Z" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.truncated).toBe(false);
+      expect(result.value.messages.map((m) => m.id).sort()).toEqual(["m1", "m2", "m3"]);
+    }
+
+    const listCalls = fetchMock.mock.calls.filter((c) => !String(c[0]).includes("/messages/m"));
+    expect(listCalls).toHaveLength(2); // proves it actually paginated, not just one page
+  });
+
+  it("marks truncated=true when the message cap is hit but more pages exist", async () => {
+    function detailFor(id: string) {
+      return {
+        id,
+        payload: {
+          mimeType: "text/plain",
+          headers: [{ name: "From", value: `sender-${id}@example.com` }, { name: "Subject", value: id }],
+          body: { data: Buffer.from(`body ${id}`).toString("base64") },
+        },
+      };
+    }
+
+    const fetchMock = vi.fn((url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/messages/m1?format=full")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(detailFor("m1")) });
+      }
+      if (urlStr.includes("pageToken=page2")) {
+        // A real API would return more here — the adapter must never fetch this
+        // page once the cap is hit, or the point of the cap is defeated.
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ messages: [{ id: "should-not-be-fetched" }] }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ messages: [{ id: "m1" }], nextPageToken: "page2" }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Cap of 1 — the first page already meets it, so it must stop there and
+    // report truncated even though the API says there's a next page.
+    const adapter = new GmailAdapter(async () => "fake-access-token", 1);
+    const result = await adapter.listRecentMessages({ sinceUtc: "2024-06-01T00:00:00.000Z" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.truncated).toBe(true);
+      expect(result.value.messages.map((m) => m.id)).toEqual(["m1"]);
+    }
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("pageToken=page2"))).toBe(false);
   });
 
   it("returns an empty array when there are no messages", async () => {
@@ -69,7 +179,7 @@ describe("GmailAdapter", () => {
     const adapter = new GmailAdapter(async () => "fake-access-token");
 
     const result = await adapter.listRecentMessages({ sinceUtc: "2024-06-01T00:00:00.000Z" });
-    expect(result).toEqual({ ok: true, value: [] });
+    expect(result).toEqual({ ok: true, value: { messages: [], truncated: false } });
   });
 
   it("returns a typed auth_error on HTTP 401", async () => {

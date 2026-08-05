@@ -26,14 +26,28 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "get_email_connection_status",
+    description:
+      "Checks whether Gmail and/or Outlook are already connected, and which address, before deciding whether to " +
+      "call connect_email. Always call this first — never ask the user to connect an account without checking.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "scan_inbox",
     description:
-      "Scans the connected inbox for recent messages, flags which ones look like flight booking confirmations, " +
-      "and extracts structured booking details from those. Requires connect_email to have been run first.",
+      "Scans the connected inbox for messages in a date range, flags which ones look like flight booking " +
+      "confirmations, and extracts structured booking details from those. Requires connect_email to have been " +
+      "run first. If the user gives an explicit period (a month, 'February and March', specific dates), use " +
+      "startDate/endDate for exactly that range — do NOT fall back to daysBack when they've specified a range.",
     input_schema: {
       type: "object",
       properties: {
-        daysBack: { type: "number", description: "How many days back to search. Defaults to 30." },
+        startDate: { type: "string", description: "Start of an explicit range, YYYY-MM-DD. Use with endDate." },
+        endDate: { type: "string", description: "End of an explicit range, YYYY-MM-DD (inclusive)." },
+        daysBack: {
+          type: "number",
+          description: "How many days back from today to search. Only used when startDate/endDate aren't given. Defaults to 30.",
+        },
       },
     },
   },
@@ -131,8 +145,10 @@ export class OperatorTools {
     switch (name) {
       case "connect_email":
         return this.connectEmail(input["provider"] as "gmail" | "outlook");
+      case "get_email_connection_status":
+        return this.getEmailConnectionStatus();
       case "scan_inbox":
-        return this.scanInbox((input["daysBack"] as number | undefined) ?? 30);
+        return this.scanInbox(input as unknown as ScanInboxInput);
       case "start_claim":
         return this.startClaim(input as unknown as StartClaimInput);
       case "submit_approval_decision":
@@ -175,21 +191,35 @@ export class OperatorTools {
     return { connected: true, provider, emailAddress };
   }
 
-  private async scanInbox(daysBack: number) {
+  private async getEmailConnectionStatus() {
+    const repo = new EmailConnectionRepo();
+    const [gmail, outlook] = await Promise.all([repo.findByProvider("gmail"), repo.findByProvider("outlook")]);
+    return {
+      gmail: gmail ? { connected: true, emailAddress: gmail.emailAddress } : { connected: false },
+      outlook: outlook ? { connected: true, emailAddress: outlook.emailAddress } : { connected: false },
+    };
+  }
+
+  private async scanInbox(input: ScanInboxInput) {
     const provider = await createEmailIngestProvider();
     if (provider.constructor.name === "FakeEmailIngestAdapter") {
       return { error: "No inbox connected — call connect_email first." };
     }
 
-    const sinceUtc = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-    const result = await provider.listRecentMessages({ sinceUtc });
+    const sinceUtc = input.startDate
+      ? `${input.startDate}T00:00:00.000Z`
+      : new Date(Date.now() - (input.daysBack ?? 30) * 24 * 60 * 60 * 1000).toISOString();
+    const untilUtc = input.endDate ? `${input.endDate}T23:59:59.999Z` : undefined;
+
+    const result = await provider.listRecentMessages({ sinceUtc, ...(untilUtc ? { untilUtc } : {}) });
     if (!result.ok) {
       return { error: `Failed to list messages: ${result.error.type} — ${result.error.message}` };
     }
 
+    const { messages, truncated } = result.value;
     const extractor = createLlmBookingExtractor(this.deps.llm);
     const candidates = [];
-    for (const message of result.value) {
+    for (const message of messages) {
       if (!looksLikeBookingEmail(message.bodyText)) {
         continue;
       }
@@ -202,7 +232,14 @@ export class OperatorTools {
       });
     }
 
-    return { totalMessages: result.value.length, bookingCandidates: candidates };
+    return {
+      totalMessages: messages.length,
+      bookingCandidates: candidates,
+      truncated,
+      ...(truncated
+        ? { warning: "More messages exist beyond an internal safety cap — this range wasn't fully covered. Narrow the date range for complete results." }
+        : {}),
+    };
   }
 
   private async startClaim(input: StartClaimInput) {
@@ -297,6 +334,12 @@ export class OperatorTools {
       payout: result["payout"],
     };
   }
+}
+
+interface ScanInboxInput {
+  startDate?: string;
+  endDate?: string;
+  daysBack?: number;
 }
 
 interface StartClaimInput {
