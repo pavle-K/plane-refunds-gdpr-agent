@@ -12,7 +12,7 @@ import { looksLikeBookingEmail } from "../src/providers/email-ingest/booking-par
 import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
 import { env } from "../src/config/env.js";
-import { pool } from "../src/db/client.js";
+import { pool, assertDatabaseConfigured } from "../src/db/client.js";
 
 function getArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -20,6 +20,8 @@ function getArg(name: string): string | undefined {
 }
 
 async function main() {
+  assertDatabaseConfigured();
+
   const startArg = getArg("start");
   const endArg = getArg("end");
   const days = Number(getArg("days") ?? "90");

@@ -1,0 +1,46 @@
+import { desc, eq } from "drizzle-orm";
+import { db } from "../client.js";
+import { channelIdentities, conversationMessages } from "../schema.js";
+import type { LlmConversationTurn } from "../../agent/llm/llm.port.js";
+
+/** How many most-recent turns to feed back as LLM history — bounds token usage
+ * on a long-running conversation instead of replaying it in full forever. */
+const DEFAULT_HISTORY_LIMIT = 40;
+
+export class ConversationRepo {
+  /** Resolves the internal identity id for a (channel, externalId) pair,
+   * creating it on first contact. channel+externalId is unique, so a
+   * concurrent first message from the same chat can't create duplicates. */
+  async getOrCreateIdentity(channel: string, externalId: string): Promise<string> {
+    const rows = await db
+      .insert(channelIdentities)
+      .values({ channel, externalId })
+      .onConflictDoUpdate({
+        target: [channelIdentities.channel, channelIdentities.externalId],
+        set: { channel },
+      })
+      .returning({ id: channelIdentities.id });
+
+    const row = rows[0];
+    if (!row) {
+      throw new Error(`Failed to resolve channel identity for ${channel}:${externalId}`);
+    }
+    return row.id;
+  }
+
+  /** Oldest-first, ready to hand straight to LlmClient.completeWithTools({ history }). */
+  async loadHistory(channelIdentityId: string, limit = DEFAULT_HISTORY_LIMIT): Promise<LlmConversationTurn[]> {
+    const rows = await db
+      .select({ role: conversationMessages.role, content: conversationMessages.content })
+      .from(conversationMessages)
+      .where(eq(conversationMessages.channelIdentityId, channelIdentityId))
+      .orderBy(desc(conversationMessages.createdAtUtc))
+      .limit(limit);
+
+    return rows.reverse().map((row) => ({ role: row.role as LlmConversationTurn["role"], content: row.content }));
+  }
+
+  async appendTurn(channelIdentityId: string, role: LlmConversationTurn["role"], content: string): Promise<void> {
+    await db.insert(conversationMessages).values({ channelIdentityId, role, content });
+  }
+}

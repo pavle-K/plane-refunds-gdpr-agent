@@ -6,11 +6,17 @@ loadDotenv();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 
-  // Required from Stage 0 onward — the graph cannot boot without a checkpoint store.
+  // Required to actually run anything that touches Postgres (the checkpointer, the
+  // CLI scripts, migrations) — but validated lazily at that point of use
+  // (db/client.ts's assertDatabaseConfigured()), not eagerly here. Optional at the
+  // schema level so pure unit tests — which use fake adapters and never touch a
+  // real database, see CLAUDE.md §5 — can import modules that reference `env`
+  // without needing Postgres to exist, in CI or anywhere else.
   DATABASE_URL: z
     .string()
-    .min(1, "DATABASE_URL is required")
-    .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must be a postgres connection string"),
+    .min(1)
+    .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must be a postgres connection string")
+    .optional(),
 
   // Which LLM provider backs createLlmClient() — see src/agent/llm/index.ts.
   // Switching providers is this value (+ optionally LLM_MODEL); no code changes.
@@ -58,6 +64,18 @@ const envSchema = z.object({
   // Required starting Stage 2/3 (payouts).
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_CONNECT_CLIENT_ID: z.string().min(1).optional(),
+
+  // Messaging channels (src/channels/) — the operator chat over Telegram/Discord/etc.
+  // Each is optional; a channel whose token isn't set falls back to its fake adapter,
+  // same convention as every other provider.
+  TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  // Shared secret Telegram echoes back in the X-Telegram-Bot-Api-Secret-Token header
+  // on every webhook call — lets src/api/routes/channels/telegram.routes.ts reject
+  // requests that didn't actually come from Telegram. Generate any random string.
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+  // src/api/server.ts — hosts inbound channel webhooks.
+  PORT: z.coerce.number().int().positive().default(3000),
 });
 
 export type Env = z.infer<typeof envSchema>;
