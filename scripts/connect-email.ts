@@ -17,9 +17,11 @@ import { EMAIL_OAUTH_PROVIDERS } from "../src/providers/email-ingest/oauth-provi
 import { EmailConnectionRepo } from "../src/db/repositories/email-connection.repo.js";
 import { REDIRECT_URI } from "../src/providers/email-ingest/oauth-redirect-uri.js";
 import { env } from "../src/config/env.js";
-import { pool } from "../src/db/client.js";
+import { pool, assertDatabaseConfigured } from "../src/db/client.js";
 
 async function main() {
+  assertDatabaseConfigured();
+
   const provider = process.argv[2];
   if (provider !== "gmail" && provider !== "outlook") {
     throw new Error("Usage: npx tsx scripts/connect-email.ts <gmail|outlook>");

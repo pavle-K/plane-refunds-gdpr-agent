@@ -1,10 +1,10 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
-import { env } from "../config/env.js";
+import { assertDatabaseConfigured } from "../db/client.js";
 
 let saver: PostgresSaver | undefined;
 
 export function getCheckpointer(): PostgresSaver {
-  saver ??= PostgresSaver.fromConnString(env.DATABASE_URL);
+  saver ??= PostgresSaver.fromConnString(assertDatabaseConfigured());
   return saver;
 }
 
