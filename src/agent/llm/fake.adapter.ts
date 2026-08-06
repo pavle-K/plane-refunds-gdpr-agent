@@ -1,4 +1,4 @@
-import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams, LlmToolCall } from "./client.js";
+import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams, LlmToolCall } from "./llm.port.js";
 
 type ToolLoopStep = { kind: "tool_call"; call: LlmToolCall } | { kind: "final_text"; text: string };
 

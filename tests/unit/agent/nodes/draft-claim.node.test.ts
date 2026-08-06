@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createDraftClaimNode } from "../../../../src/agent/nodes/draft-claim.node.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { buildState } from "../../../helpers/build-state.js";
 import type { Booking } from "../../../../src/domain/claim/claim.types.js";

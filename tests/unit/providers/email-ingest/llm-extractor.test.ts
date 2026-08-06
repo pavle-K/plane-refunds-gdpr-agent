@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createLlmBookingExtractor } from "../../../../src/providers/email-ingest/llm-extractor.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { noAttachmentFetcher } from "../../../../src/providers/email-ingest/booking-parser.js";
 import { ok, err } from "../../../../src/lib/result.js";
 import type { EmailMessage } from "../../../../src/providers/email-ingest/email-ingest.port.js";

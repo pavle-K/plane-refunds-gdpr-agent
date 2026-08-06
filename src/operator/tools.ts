@@ -1,5 +1,5 @@
 import { Command } from "@langchain/langgraph";
-import type Anthropic from "@anthropic-ai/sdk";
+import type { LlmToolDefinition } from "../agent/llm/index.js";
 import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
 import { runAuthorizationCodeFlow } from "../providers/email-ingest/oauth-flow.js";
@@ -12,14 +12,14 @@ import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extract
 import { env } from "../config/env.js";
 import type { Booking } from "../domain/claim/claim.types.js";
 
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "connect_email",
     description:
       "Authorizes read-only access to the user's Gmail or Outlook inbox. This opens a browser window for the " +
       "user to log in and approve access — tell them to check their browser before calling this. Only call when " +
       "the user has explicitly asked to connect an email account.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
       required: ["provider"],
@@ -30,7 +30,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     description:
       "Checks whether Gmail and/or Outlook are already connected, and which address, before deciding whether to " +
       "call connect_email. Always call this first — never ask the user to connect an account without checking.",
-    input_schema: { type: "object", properties: {} },
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "scan_inbox",
@@ -39,7 +39,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "confirmations, and extracts structured booking details from those. Requires connect_email to have been " +
       "run first. If the user gives an explicit period (a month, 'February and March', specific dates), use " +
       "startDate/endDate for exactly that range — do NOT fall back to daysBack when they've specified a range.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         startDate: { type: "string", description: "Start of an explicit range, YYYY-MM-DD. Use with endDate." },
@@ -64,7 +64,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "airport codes or a carrier code; just call this with what you already extracted. Returns the eligibility " +
       "result and, if eligible, the drafted claim letter for the user to review — do NOT treat this as sent or " +
       "approved, it always needs a separate explicit decision.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         segments: {
@@ -98,7 +98,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "user has explicitly and unambiguously stated their decision in their most recent message — never infer " +
       "approval from silence, a vague reaction, or a request to 'see it again'. If they asked for changes, use " +
       "action 'edit' with the full corrected letter text, not just the requested change.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
@@ -111,7 +111,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "get_claim_status",
     description: "Checks the current status of a claim thread, including what it's currently waiting on, if anything.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { threadId: { type: "string", description: "Omit to use the most recently started/touched claim." } },
     },
@@ -121,7 +121,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     description:
       "Provides the airline's reply text for a claim that's waiting for a response, so it can be classified " +
       "and routed (accepted/rejected/needs more info). Omit replyText to signal a timeout (no reply received).",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
@@ -132,7 +132,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "submit_payment_confirmation",
     description: "Confirms the airline actually paid, triggering the commission split and payout.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },

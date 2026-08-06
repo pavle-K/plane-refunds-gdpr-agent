@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createClassifyResponseNode } from "../../../../src/agent/nodes/classify-response.node.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.js";
+import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { IllegalTransitionError } from "../../../../src/domain/claim/state-machine.js";
 import { buildState } from "../../../helpers/build-state.js";

@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { LlmClient, LlmToolDefinition, LlmToolCall } from "./client.js";
+import type { LlmClient, LlmToolDefinition, LlmToolCall } from "./llm.port.js";
 
 export class StructuredLlmOutputError extends Error {
   constructor(message: string) {
