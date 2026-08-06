@@ -6,11 +6,17 @@ loadDotenv();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 
-  // Required from Stage 0 onward — the graph cannot boot without a checkpoint store.
+  // Required to actually run anything that touches Postgres (the checkpointer, the
+  // CLI scripts, migrations) — but validated lazily at that point of use
+  // (db/client.ts's assertDatabaseConfigured()), not eagerly here. Optional at the
+  // schema level so pure unit tests — which use fake adapters and never touch a
+  // real database, see CLAUDE.md §5 — can import modules that reference `env`
+  // without needing Postgres to exist, in CI or anywhere else.
   DATABASE_URL: z
     .string()
-    .min(1, "DATABASE_URL is required")
-    .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must be a postgres connection string"),
+    .min(1)
+    .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must be a postgres connection string")
+    .optional(),
 
   // Which LLM provider backs createLlmClient() — see src/agent/llm/index.ts.
   // Switching providers is this value (+ optionally LLM_MODEL); no code changes.
