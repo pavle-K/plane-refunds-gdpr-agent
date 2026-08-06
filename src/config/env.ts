@@ -58,6 +58,18 @@ const envSchema = z.object({
   // Required starting Stage 2/3 (payouts).
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_CONNECT_CLIENT_ID: z.string().min(1).optional(),
+
+  // Messaging channels (src/channels/) — the operator chat over Telegram/Discord/etc.
+  // Each is optional; a channel whose token isn't set falls back to its fake adapter,
+  // same convention as every other provider.
+  TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  // Shared secret Telegram echoes back in the X-Telegram-Bot-Api-Secret-Token header
+  // on every webhook call — lets src/api/routes/channels/telegram.routes.ts reject
+  // requests that didn't actually come from Telegram. Generate any random string.
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+  // src/api/server.ts — hosts inbound channel webhooks.
+  PORT: z.coerce.number().int().positive().default(3000),
 });
 
 export type Env = z.infer<typeof envSchema>;
