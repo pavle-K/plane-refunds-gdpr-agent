@@ -11,6 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 20's bundled npm (~10.8) has a known `npm ci` bug validating nested
+      # optionalDependencies (e.g. tsx's vendored esbuild's platform packages),
+      # producing false "Missing: X from lock file" errors on an otherwise valid
+      # lockfile — fixed in npm 11. `packageManager` in package.json pins the
+      # exact npm version this project uses; corepack enforces it here (and for
+      # any contributor running npm locally), rather than trusting whatever
+      # version happens to ship with the chosen Node runtime. Must be
+      # `corepack enable npm` specifically — plain `corepack enable` only shims
+      # yarn/pnpm by default and silently leaves npm unpinned.
+      - run: corepack enable npm
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
