@@ -32,3 +32,36 @@ export const emailConnections = pgTable(
   },
   (table) => [unique().on(table.provider, table.emailAddress)],
 );
+
+/**
+ * One row per (channel, externalId) — e.g. a Telegram chat id, a Discord user
+ * id, or an email address. This is the identity the operator chat session
+ * (src/operator/session.ts) is keyed on, regardless of which messaging app the
+ * user is talking through. channel+externalId is unique so re-messaging from
+ * the same chat resolves to the same identity rather than duplicating it.
+ */
+export const channelIdentities = pgTable(
+  "channel_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    channel: text("channel").notNull(), // "cli" | "telegram" | "discord" | "whatsapp" | "viber" | "facebook" | "email"
+    externalId: text("external_id").notNull(),
+    createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique().on(table.channel, table.externalId)],
+);
+
+/**
+ * Chat turns for a channel identity, in send order — this is what
+ * src/operator/session.ts loads as LLM conversation history and appends to
+ * after each turn, replacing the in-memory-only history the CLI used to keep.
+ */
+export const conversationMessages = pgTable("conversation_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  channelIdentityId: uuid("channel_identity_id")
+    .notNull()
+    .references(() => channelIdentities.id),
+  role: text("role").notNull(), // "user" | "assistant"
+  content: text("content").notNull(),
+  createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+});

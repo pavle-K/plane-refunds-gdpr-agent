@@ -21,7 +21,9 @@
     "claim:resume": "tsx scripts/resume-claim.ts",
     "email:connect": "tsx scripts/connect-email.ts",
     "email:check": "tsx scripts/check-inbox.ts",
-    "chat": "tsx scripts/chat.ts"
+    "chat": "tsx scripts/chat.ts",
+    "server": "tsx src/api/server.ts",
+    "telegram:setup": "tsx scripts/telegram-setup.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -29,12 +31,14 @@
     "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "express": "^5.2.1",
     "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.4",
     "drizzle-kit": "^0.31.10",

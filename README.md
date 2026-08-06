@@ -15,6 +15,7 @@ Most eligible passengers never claim the compensation they're owed because the p
 - [Repository layout](#repository-layout)
 - [Getting started](#getting-started)
 - [Choosing an LLM provider](#choosing-an-llm-provider)
+- [Connecting messaging channels](#connecting-messaging-channels)
 - [Running it](#running-it)
 - [Testing](#testing)
 - [Project status](#project-status)
@@ -63,10 +64,13 @@ ingest → checkEligibility ─(ineligible)────────────�
 
 **The rule that makes this maintainable:** the LLM never computes money or law. Distance bands, delay thresholds, and compensation amounts are pure arithmetic in `src/domain/ec261/`, computed before the LLM is ever called and passed in as fixed values. The LLM is used only for extraction (email → structured data), drafting (structured data → prose), and classification (reply → category) — never for anything a hallucination could turn into a legal or financial error.
 
-### Two ways to interact with it
+### Ways to interact with it
 
-1. **`npm run chat`** — a conversational operator. You talk to it in plain language ("check my inbox for bookings in March", "looks good, send it"); it calls tools that drive the graph above. See [`src/operator/`](src/operator/).
-2. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the graph or providers directly with flags, useful for scripted testing without the LLM in the loop for orchestration.
+1. **`npm run chat`** — a conversational operator running in your terminal. You talk to it in plain language ("check my inbox for bookings in March", "looks good, send it"); it calls tools that drive the graph above. See [`src/operator/`](src/operator/).
+2. **Messaging channels** (`npm run server`) — the same conversation, reachable from Telegram (and, as they're added, Discord/WhatsApp/Viber/Facebook/email) instead of a terminal. See [Connecting messaging channels](#connecting-messaging-channels).
+3. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the graph or providers directly with flags, useful for scripted testing without the LLM in the loop for orchestration.
+
+Both (1) and (2) are front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one tool-use loop, one persisted history per user identity, many ways in.
 
 ---
 
@@ -107,7 +111,13 @@ src/
     nodes/         # one thin file per pipeline node
     prompts/       # prompts as data (.md files), never inlined in code
     llm/           # the multi-provider LLM client — see below
-  operator/        # the conversational chat interface (tools.ts + prompt.md)
+  operator/        # tools.ts + prompt.md (what the agent can do) and
+                   #   session.ts (the shared conversation loop every channel calls)
+  channels/        # messaging-platform adapters, same ports/adapters shape as providers/
+    telegram/      #   webhook parsing + Bot API sendMessage; fake.adapter.ts covers the rest for now
+  api/
+    server.ts      # hosts inbound channel webhooks
+    routes/channels/  # one route file per platform
   compliance/      # audit logging (append-only); consent/retention/DSAR are planned, not built yet
   db/              # Drizzle schema, migrations, repositories
   config/          # env parsing (zod, fails fast at boot) and constants
@@ -135,7 +145,7 @@ npm install
 cp .env.example .env
 # fill in DATABASE_URL at minimum, plus your chosen LLM provider's key (see below)
 
-npm run db:migrate      # creates the app's own tables (audit log, email connections)
+npm run db:migrate      # creates the app's own tables (audit log, email connections, channel identities/history)
 ```
 
 There's no separate command to set up LangGraph's own checkpoint tables — every entry point (`chat`, `claim:start`, `claim:resume`) calls `setupCheckpointer()` on startup, which creates them if missing.
@@ -186,12 +196,43 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
 
 ---
 
+## Connecting messaging channels
+
+`npm run chat` and every messaging channel are the same conversation underneath — `src/operator/session.ts` is the one place that builds the system prompt, runs the tool-use loop, and persists history (in the `channel_identities`/`conversation_messages` tables, keyed by `(channel, externalId)` — a Telegram chat id, a Discord user id, an email address, whatever a given platform uses as its identity). A channel adapter's only job is translating its platform's payload into `{externalUserId, text}` and sending the reply string back out — see `src/channels/channel.port.ts`.
+
+**Telegram** is the only channel wired up so far (Discord, WhatsApp, Viber, and Facebook follow the same `src/channels/<platform>/` shape once added — `channel.port.ts` and `src/operator/session.ts` don't change).
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`, and copy the token it gives you.
+2. Add to `.env`:
+   ```bash
+   TELEGRAM_BOT_TOKEN=<token from BotFather>
+   TELEGRAM_WEBHOOK_SECRET=<any random string>   # e.g. node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+   ```
+3. Apply the migration if you haven't: `npm run db:migrate`.
+4. Start the API: `npm run server` (listens on `PORT`, default 3000; needs a real `LLM_PROVIDER` configured, same rule as `chat`).
+5. Telegram needs to reach that server over public HTTPS. For local development, tunnel it in a separate terminal: `ngrok http 3000` (needs a free ngrok account + `ngrok config add-authtoken <token>` once, from https://dashboard.ngrok.com).
+6. Register the webhook:
+   ```bash
+   npm run telegram:setup
+   ```
+   This validates `TELEGRAM_BOT_TOKEN` against Telegram, auto-detects the running ngrok tunnel (via ngrok's own local API at `127.0.0.1:4040` — no need to copy the URL by hand), confirms the server actually answers at that URL, then registers the webhook — printing exactly what's missing at whichever step fails, rather than a generic error. For a real hosted deployment (not ngrok), skip auto-detection and pass the real domain: `npm run telegram:setup -- --url https://your-domain.com`.
+7. Message your bot on Telegram. Each webhook call is authenticated via the `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET`, acknowledged immediately (Telegram retries on anything but a fast 2xx), and processed asynchronously — the reply goes out via a separate Bot API call, not the webhook response.
+
+If `TELEGRAM_BOT_TOKEN` isn't set, `createTelegramAdapter()` falls back to `FakeChannelAdapter` (records instead of sending) — same convention as every other provider in this repo.
+
+---
+
 ## Running it
 
 ```bash
 npm run chat
 ```
 Talk to it directly: "connect my gmail", "check my inbox for flights in February", "start a claim for BA123 on 2024-06-15", "looks good, send it". This is the real product experience, and it runs on whichever `LLM_PROVIDER` you've configured.
+
+```bash
+npm run server
+```
+Same conversation, reachable from Telegram (and future channels) instead of a terminal — see [Connecting messaging channels](#connecting-messaging-channels).
 
 ```bash
 npm run claim:start -- --flight BA123 --date 2024-06-15 --from LHR --to JFK --carrier BA --delay 220 --status delayed
@@ -232,8 +273,8 @@ Following the staged plan in `CLAUDE.md`:
 
 - ✅ **Stage 0** — project scaffolding, env validation, Postgres + LangGraph checkpointing.
 - ✅ **Stage 1** — domain core (`src/domain/`) and all data providers, each with a fake adapter and unit tests.
-- ✅ **Stage 2** — the full graph, prompts, the human-approval gate, audit logging, and (beyond the original plan) the conversational chat operator and multi-provider LLM support.
-- ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` currently has only append-only audit logging — **no consent capture, retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**, and there's no `claim.repo.ts`/`user.repo.ts` — claim state currently lives only in the LangGraph checkpointer, not a queryable table.
+- ✅ **Stage 2** — the full graph, prompts, the human-approval gate, audit logging, and (beyond the original plan) the conversational chat operator, multi-provider LLM support, and a messaging-channel layer (Telegram wired up; Discord/WhatsApp/Viber/Facebook/email follow the same adapter shape).
+- ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` currently has only append-only audit logging — **no consent capture, retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**, and there's no `claim.repo.ts`/`user.repo.ts` — claim state currently lives only in the LangGraph checkpointer, not a queryable table. Note this now also applies to channel identities/history (`channel_identities`, `conversation_messages`) — a WhatsApp phone number or Telegram chat id is PII the moment it's stored, and none of it is covered by DSAR export/delete or retention yet.
 
 ---
 
