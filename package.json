@@ -22,7 +22,8 @@
     "email:connect": "tsx scripts/connect-email.ts",
     "email:check": "tsx scripts/check-inbox.ts",
     "chat": "tsx scripts/chat.ts",
-    "server": "tsx src/api/server.ts"
+    "server": "tsx src/api/server.ts",
+    "telegram:setup": "tsx scripts/telegram-setup.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

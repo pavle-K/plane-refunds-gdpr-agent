@@ -208,14 +208,15 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
    TELEGRAM_BOT_TOKEN=<token from BotFather>
    TELEGRAM_WEBHOOK_SECRET=<any random string>   # e.g. node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
    ```
-3. Start the API: `npm run server` (listens on `PORT`, default 3000; needs a real `LLM_PROVIDER` configured, same rule as `chat`).
-4. Telegram needs to reach that server over public HTTPS — for local development, tunnel it (e.g. `ngrok http 3000`), then register the webhook once:
+3. Apply the migration if you haven't: `npm run db:migrate`.
+4. Start the API: `npm run server` (listens on `PORT`, default 3000; needs a real `LLM_PROVIDER` configured, same rule as `chat`).
+5. Telegram needs to reach that server over public HTTPS. For local development, tunnel it in a separate terminal: `ngrok http 3000` (needs a free ngrok account + `ngrok config add-authtoken <token>` once, from https://dashboard.ngrok.com).
+6. Register the webhook:
    ```bash
-   curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
-     -d "url=https://<your-public-url>/webhooks/telegram" \
-     -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
+   npm run telegram:setup
    ```
-5. Message your bot on Telegram. Each webhook call is authenticated via the `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET`, acknowledged immediately (Telegram retries on anything but a fast 2xx), and processed asynchronously — the reply goes out via a separate Bot API call, not the webhook response.
+   This validates `TELEGRAM_BOT_TOKEN` against Telegram, auto-detects the running ngrok tunnel (via ngrok's own local API at `127.0.0.1:4040` — no need to copy the URL by hand), confirms the server actually answers at that URL, then registers the webhook — printing exactly what's missing at whichever step fails, rather than a generic error. For a real hosted deployment (not ngrok), skip auto-detection and pass the real domain: `npm run telegram:setup -- --url https://your-domain.com`.
+7. Message your bot on Telegram. Each webhook call is authenticated via the `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET`, acknowledged immediately (Telegram retries on anything but a fast 2xx), and processed asynchronously — the reply goes out via a separate Bot API call, not the webhook response.
 
 If `TELEGRAM_BOT_TOKEN` isn't set, `createTelegramAdapter()` falls back to `FakeChannelAdapter` (records instead of sending) — same convention as every other provider in this repo.
 
