@@ -29,6 +29,13 @@
       "when": 1786120980888,
       "tag": "0003_ambiguous_echo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786123507417,
+      "tag": "0004_cute_christian_walker",
+      "breakpoints": true
     }
   ]
 }

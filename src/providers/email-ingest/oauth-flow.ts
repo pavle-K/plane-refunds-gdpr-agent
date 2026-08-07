@@ -34,13 +34,20 @@ export class OAuthFlowError extends Error {
   }
 }
 
-function buildAuthorizationUrl(config: OAuthProviderConfig, state: string): string {
+/** codeChallenge (PKCE, RFC 7636) is optional — the local loopback flow below
+ * doesn't use it; the hosted flow (hosted-oauth.ts) always does, as
+ * defense-in-depth on top of the state nonce. */
+export function buildAuthorizationUrl(config: OAuthProviderConfig, state: string, options?: { codeChallenge?: string }): string {
   const url = new URL(config.authorizationEndpoint);
   url.searchParams.set("client_id", config.clientId);
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", config.scope);
   url.searchParams.set("state", state);
+  if (options?.codeChallenge) {
+    url.searchParams.set("code_challenge", options.codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+  }
   for (const [key, value] of Object.entries(config.extraAuthParams ?? {})) {
     url.searchParams.set(key, value);
   }
@@ -53,7 +60,11 @@ interface TokenEndpointResponse {
   expires_in: number;
 }
 
-async function exchangeCodeForTokens(config: OAuthProviderConfig, code: string): Promise<OAuthTokens> {
+export async function exchangeCodeForTokens(
+  config: OAuthProviderConfig,
+  code: string,
+  options?: { codeVerifier?: string },
+): Promise<OAuthTokens> {
   const body = new URLSearchParams({
     client_id: config.clientId,
     client_secret: config.clientSecret,
@@ -61,6 +72,9 @@ async function exchangeCodeForTokens(config: OAuthProviderConfig, code: string):
     grant_type: "authorization_code",
     redirect_uri: config.redirectUri,
   });
+  if (options?.codeVerifier) {
+    body.set("code_verifier", options.codeVerifier);
+  }
 
   const response = await fetch(config.tokenEndpoint, {
     method: "POST",

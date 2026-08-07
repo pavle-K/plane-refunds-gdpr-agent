@@ -3,6 +3,8 @@ import { get } from "node:http";
 import {
   runAuthorizationCodeFlow,
   refreshAccessToken,
+  buildAuthorizationUrl,
+  exchangeCodeForTokens,
   OAuthFlowError,
   type OAuthProviderConfig,
 } from "../../../../src/providers/email-ingest/oauth-flow.js";
@@ -43,6 +45,82 @@ const BASE_CONFIG: OAuthProviderConfig = {
   scope: "read",
   redirectUri: "http://localhost:8799/callback",
 };
+
+describe("buildAuthorizationUrl", () => {
+  it("builds a URL with the core OAuth2 params and no PKCE by default", () => {
+    const url = new URL(buildAuthorizationUrl(BASE_CONFIG, "state-1"));
+    expect(url.origin + url.pathname).toBe("https://example.com/authorize");
+    expect(url.searchParams.get("client_id")).toBe("client-1");
+    expect(url.searchParams.get("redirect_uri")).toBe(BASE_CONFIG.redirectUri);
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("scope")).toBe("read");
+    expect(url.searchParams.get("state")).toBe("state-1");
+    expect(url.searchParams.has("code_challenge")).toBe(false);
+    expect(url.searchParams.has("code_challenge_method")).toBe(false);
+  });
+
+  it("adds PKCE params when a codeChallenge is given", () => {
+    const url = new URL(buildAuthorizationUrl(BASE_CONFIG, "state-1", { codeChallenge: "challenge-abc" }));
+    expect(url.searchParams.get("code_challenge")).toBe("challenge-abc");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("includes extraAuthParams", () => {
+    const url = new URL(buildAuthorizationUrl({ ...BASE_CONFIG, extraAuthParams: { access_type: "offline" } }, "s"));
+    expect(url.searchParams.get("access_type")).toBe("offline");
+  });
+});
+
+describe("exchangeCodeForTokens", () => {
+  it("exchanges a code for tokens", async () => {
+    mockTokenFetchOnce({ access_token: "access-1", refresh_token: "refresh-1", expires_in: 3600 });
+    const tokens = await exchangeCodeForTokens(BASE_CONFIG, "code-1");
+    expect(tokens.accessToken).toBe("access-1");
+    expect(tokens.refreshToken).toBe("refresh-1");
+  });
+
+  it("sends code_verifier in the token request body when provided", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ access_token: "access-1", refresh_token: "refresh-1", expires_in: 3600 }),
+      text: () => Promise.resolve(""),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await exchangeCodeForTokens(BASE_CONFIG, "code-1", { codeVerifier: "verifier-xyz" });
+
+    const call = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(call[1].body as string);
+    expect(body.get("code_verifier")).toBe("verifier-xyz");
+  });
+
+  it("omits code_verifier from the request body when not provided", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ access_token: "access-1", refresh_token: "refresh-1", expires_in: 3600 }),
+      text: () => Promise.resolve(""),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await exchangeCodeForTokens(BASE_CONFIG, "code-1");
+
+    const call = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(call[1].body as string);
+    expect(body.has("code_verifier")).toBe(false);
+  });
+
+  it("throws OAuthFlowError when no refresh_token comes back", async () => {
+    mockTokenFetchOnce({ access_token: "access-1", expires_in: 3600 });
+    await expect(exchangeCodeForTokens(BASE_CONFIG, "code-1")).rejects.toThrow(OAuthFlowError);
+  });
+
+  it("throws OAuthFlowError on a non-ok response", async () => {
+    mockTokenFetchOnce({ error: "invalid_grant" }, 400);
+    await expect(exchangeCodeForTokens(BASE_CONFIG, "code-1")).rejects.toThrow(OAuthFlowError);
+  });
+});
 
 describe("refreshAccessToken", () => {
   it("exchanges a refresh token for a new access token", async () => {

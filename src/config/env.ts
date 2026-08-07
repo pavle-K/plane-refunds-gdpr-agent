@@ -76,6 +76,13 @@ const envSchema = z.object({
 
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
+
+  // The public HTTPS origin this server is reachable at (e.g.
+  // https://claims.example.com) — used to build the hosted OAuth redirect URI
+  // (src/providers/email-ingest/oauth-redirect-uri.ts's getHostedRedirectUri).
+  // Optional at the schema level (see DATABASE_URL's comment for why); actually
+  // required to start a hosted OAuth flow, checked lazily at that point of use.
+  PUBLIC_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -1,9 +1,12 @@
 import { AuditRepo } from "../db/repositories/audit.repo.js";
 
-export type AuditEntryType = "llm_output" | "human_decision" | "system_action";
+export type AuditEntryType = "llm_output" | "human_decision" | "system_action" | "mailbox_reassigned";
 
 export interface AuditEntry {
-  claimId: string;
+  /** Omit for entries that aren't about a claim — e.g. "mailbox_reassigned". */
+  claimId?: string;
+  /** Who this entry is attributable to, when applicable. */
+  userId?: string;
   entryType: AuditEntryType;
   payload: Record<string, unknown>;
 }

@@ -19,7 +19,9 @@ export const users = pgTable("users", {
  */
 export const auditLog = pgTable("audit_log", {
   id: uuid("id").primaryKey().defaultRandom(),
-  claimId: text("claim_id").notNull(),
+  // Nullable: not every entry is about a claim (e.g. "mailbox_reassigned" is
+  // about an email connection, not a LangGraph thread).
+  claimId: text("claim_id"),
   // Nullable: some entries (e.g. future system/background-job actions) may not
   // be attributable to a single user. Every entry written by a user-initiated
   // action should set this.
