@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { LlmClient } from "../agent/llm/llm.port.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { UserRepo } from "../db/repositories/user.repo.js";
+import { type ConsentGate, DbConsentGate, decideConsent, CONSENT_NOTICE } from "../compliance/consent.js";
 import { TOOL_DEFINITIONS, OperatorTools } from "./tools.js";
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
@@ -52,8 +53,16 @@ export interface IncomingTurn {
  * has, and persists the new turn. Nothing channel-specific lives here; a
  * channel adapter's only job is turning its platform's payload into
  * {channel, externalId, text} and sending the returned string back out.
+ *
+ * Gates on consent before any of that: an unconsented user's message never
+ * reaches the LLM or a tool — see src/compliance/consent.ts's decideConsent,
+ * which is where the actual decision logic (and its tests) live.
  */
-export async function handleTurn(llm: LlmClient, turn: IncomingTurn): Promise<string> {
+export async function handleTurn(
+  llm: LlmClient,
+  turn: IncomingTurn,
+  consentGate: ConsentGate = new DbConsentGate(),
+): Promise<string> {
   const repo = new ConversationRepo();
   const channelIdentityId = await repo.getOrCreateIdentity(turn.channel, turn.externalId);
   const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
@@ -62,7 +71,29 @@ export async function handleTurn(llm: LlmClient, turn: IncomingTurn): Promise<st
     // creates/returns — this would only happen if the DB was hand-edited.
     throw new Error(`Channel identity ${channelIdentityId} has no linked user.`);
   }
+
+  const alreadyConsented = await consentGate.hasConsented(userId);
   const history = await repo.loadHistory(channelIdentityId);
+  // Whether *this notice* was already shown, not merely "has this identity
+  // ever spoken" — an identity that talked to this bot before the consent
+  // system existed has history but has never seen it either. See
+  // decideConsent's doc comment.
+  const noticeAlreadyShown = history.some((h) => h.role === "assistant" && h.content === CONSENT_NOTICE);
+  const consentDecision = decideConsent({
+    alreadyConsented,
+    noticeAlreadyShown,
+    messageText: turn.text,
+  });
+
+  if (consentDecision.action !== "proceed") {
+    if (consentDecision.action === "consent_recorded") {
+      await consentGate.recordConsent(userId, turn.channel);
+    }
+    await repo.appendTurn(channelIdentityId, "user", turn.text);
+    await repo.appendTurn(channelIdentityId, "assistant", consentDecision.responseText);
+    return consentDecision.responseText;
+  }
+
   const tools = getOperatorTools(channelIdentityId, userId);
 
   const responseText = await llm.completeWithTools({
