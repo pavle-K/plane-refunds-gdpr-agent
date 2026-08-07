@@ -31,7 +31,7 @@ const operatorToolsByIdentity = new Map<string, OperatorTools>();
 function getOperatorTools(channelIdentityId: string, userId: string): OperatorTools {
   let tools = operatorToolsByIdentity.get(channelIdentityId);
   if (!tools) {
-    tools = new OperatorTools(userId);
+    tools = new OperatorTools(userId, channelIdentityId);
     operatorToolsByIdentity.set(channelIdentityId, tools);
   }
   return tools;

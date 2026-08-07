@@ -3,7 +3,11 @@ import { buildAuthorizationUrl, exchangeCodeForTokens } from "./oauth-flow.js";
 import { EMAIL_OAUTH_PROVIDERS } from "./oauth-providers.js";
 import { getHostedRedirectUri } from "./oauth-redirect-uri.js";
 import { OAuthPendingFlowRepo } from "../../db/repositories/oauth-pending-flow.repo.js";
-import { EmailConnectionRepo, type EmailProviderName } from "../../db/repositories/email-connection.repo.js";
+import {
+  EmailConnectionRepo,
+  MissingEncryptionKeyError,
+  type EmailProviderName,
+} from "../../db/repositories/email-connection.repo.js";
 import { DbAuditLog } from "../../compliance/audit-log.js";
 import { env } from "../../config/env.js";
 import { ok, err, type Result } from "../../lib/result.js";
@@ -60,6 +64,11 @@ export async function buildHostedAuthorizationUrl(
   channelIdentityId: string,
   provider: EmailProviderName,
 ): Promise<HostedAuthorizationUrl> {
+  // Fail fast here rather than producing a link that's doomed to fail once the
+  // user completes it and the callback tries to store the connection.
+  if (!env.TOKEN_ENCRYPTION_KEY) {
+    throw new MissingEncryptionKeyError();
+  }
   const { clientId, clientSecret } = requireProviderCredentials(provider);
   const redirectUri = getHostedRedirectUri(provider);
   const { codeVerifier, codeChallenge } = generatePkcePair();

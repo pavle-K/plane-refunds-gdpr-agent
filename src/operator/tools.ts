@@ -2,23 +2,20 @@ import { Command } from "@langchain/langgraph";
 import type { LlmToolDefinition } from "../agent/llm/index.js";
 import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
-import { runAuthorizationCodeFlow } from "../providers/email-ingest/oauth-flow.js";
-import { EMAIL_OAUTH_PROVIDERS } from "../providers/email-ingest/oauth-providers.js";
-import { REDIRECT_URI } from "../providers/email-ingest/oauth-redirect-uri.js";
+import { buildHostedAuthorizationUrl } from "../providers/email-ingest/hosted-oauth.js";
 import { EmailConnectionRepo } from "../db/repositories/email-connection.repo.js";
 import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
-import { env } from "../config/env.js";
 import type { Booking } from "../domain/claim/claim.types.js";
 
 export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "connect_email",
     description:
-      "Authorizes read-only access to the user's Gmail or Outlook inbox. This opens a browser window for the " +
-      "user to log in and approve access — tell them to check their browser before calling this. Only call when " +
-      "the user has explicitly asked to connect an email account.",
+      "Returns a link that authorizes read-only access to the user's Gmail or Outlook inbox. Does NOT wait for " +
+      "them to complete it — send them the link and stop there; you'll be told separately, in a later message, " +
+      "once it's actually connected. Only call when the user has explicitly asked to connect an email account.",
     inputSchema: {
       type: "object",
       properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
@@ -150,8 +147,14 @@ export class OperatorTools {
   private lastThreadId: string | null = null;
 
   /** The user this instance acts on behalf of — every email-connection lookup
-   * and (from Segment 5) claim-ownership check is scoped to this id. */
-  constructor(private readonly userId: string) {}
+   * and (from Segment 5) claim-ownership check is scoped to this id.
+   * channelIdentityId is the specific chat connect_email was called from,
+   * recorded on the pending OAuth flow so the callback route knows where to
+   * send the "you're connected" confirmation. */
+  constructor(
+    private readonly userId: string,
+    private readonly channelIdentityId: string,
+  ) {}
 
   private resolveThreadId(threadId?: string): string {
     const id = threadId ?? this.lastThreadId;
@@ -188,32 +191,17 @@ export class OperatorTools {
     }
   }
 
+  /** Returns a link immediately — does not block waiting for the user to
+   * complete it. The public callback route (src/api/routes/oauth.routes.ts)
+   * finishes the flow out-of-band and sends a proactive "connected" message
+   * back to this same chat once it does. */
   private async connectEmail(provider: "gmail" | "outlook") {
-    if (!env.TOKEN_ENCRYPTION_KEY) {
-      return { error: "TOKEN_ENCRYPTION_KEY is not set in .env — cannot store tokens." };
-    }
-    const clientId = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_ID : env.OUTLOOK_OAUTH_CLIENT_ID;
-    const clientSecret = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_SECRET : env.OUTLOOK_OAUTH_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      return { error: `${provider.toUpperCase()}_OAUTH_CLIENT_ID/_SECRET not set in .env.` };
-    }
-
-    const setup = EMAIL_OAUTH_PROVIDERS[provider];
-    const config = setup.buildConfig(clientId, clientSecret, REDIRECT_URI);
-    const tokens = await runAuthorizationCodeFlow(config);
-    const emailAddress = await setup.fetchEmailAddress(tokens.accessToken);
-
-    const repo = new EmailConnectionRepo();
-    await repo.upsert({
-      userId: this.userId,
+    const { authorizationUrl, expiresInMinutes } = await buildHostedAuthorizationUrl(
+      this.userId,
+      this.channelIdentityId,
       provider,
-      emailAddress,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      accessTokenExpiresAtUtc: tokens.expiresAtUtc,
-    });
-
-    return { connected: true, provider, emailAddress };
+    );
+    return { authorizationUrl, expiresInMinutes };
   }
 
   private async getEmailConnectionStatus() {

@@ -62,4 +62,17 @@ export class ConversationRepo {
   async appendTurn(channelIdentityId: string, role: LlmConversationTurn["role"], content: string): Promise<void> {
     await db.insert(conversationMessages).values({ channelIdentityId, role, content });
   }
+
+  /** The reverse of getOrCreateIdentity — given an id, which (channel,
+   * externalId) does it belong to. Used to route a proactive, out-of-band
+   * message (e.g. the OAuth callback's "you're connected" notification) back
+   * to the right chat via the right ChannelAdapter. */
+  async findChannelIdentity(channelIdentityId: string): Promise<{ channel: string; externalId: string } | null> {
+    const rows = await db
+      .select({ channel: channelIdentities.channel, externalId: channelIdentities.externalId })
+      .from(channelIdentities)
+      .where(eq(channelIdentities.id, channelIdentityId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
 }

@@ -17,10 +17,35 @@ import { buildHostedAuthorizationUrl } from "../../../src/providers/email-ingest
 import { OAuthPendingFlowRepo } from "../../../src/db/repositories/oauth-pending-flow.repo.js";
 import { UserRepo } from "../../../src/db/repositories/user.repo.js";
 import { ConversationRepo } from "../../../src/db/repositories/conversation.repo.js";
+import { FakeChannelAdapter } from "../../../src/channels/fake.adapter.js";
 
 const canRun = Boolean(
   env.DATABASE_URL && env.TOKEN_ENCRYPTION_KEY && env.PUBLIC_URL && env.GMAIL_OAUTH_CLIENT_ID && env.GMAIL_OAUTH_CLIENT_SECRET,
 );
+
+/** The post-connect notification is sent after the HTTP response is already
+ * flushed (see oauth.routes.ts's sendConnectedNotification) — the client's
+ * fetch() can resolve before that background work lands, so assertions on it
+ * poll briefly instead of assuming it's already done. */
+async function waitFor(condition: () => boolean, timeoutMs = 2000, intervalMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+async function waitForAsync(condition: () => Promise<boolean>, timeoutMs = 2000, intervalMs = 25): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await condition())) {
+    if (Date.now() > deadline) {
+      throw new Error(`waitForAsync: condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 /** Only the outbound calls to Google are stubbed — everything else (notably
  * the test's own request to the local Express server below) falls through to
@@ -52,10 +77,11 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
   let app: Express;
   let server: Server;
   let baseUrl: string;
+  const fakeAdapter = new FakeChannelAdapter();
 
   beforeAll(async () => {
     app = express();
-    app.use(createOAuthCallbackRouter());
+    app.use(createOAuthCallbackRouter(() => fakeAdapter));
     server = createServer(app);
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const { port } = server.address() as AddressInfo;
@@ -87,6 +113,32 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
     const body = await res.text();
     expect(body).toContain(emailAddress);
     expect(body).toContain("Connected");
+  });
+
+  it("pushes a proactive confirmation to the originating chat and appends it to conversation history", async () => {
+    const { userId, channelIdentityId } = await makeUserAndIdentity();
+    const identity = await new ConversationRepo().findChannelIdentity(channelIdentityId);
+    const emailAddress = `notify-${randomUUID()}@example.com`;
+    stubGmailFetch(emailAddress);
+
+    const { authorizationUrl } = await buildHostedAuthorizationUrl(userId, channelIdentityId, "gmail");
+    const state = new URL(authorizationUrl).searchParams.get("state")!;
+
+    const sentBefore = fakeAdapter.sentMessages.length;
+    const res = await fetch(`${baseUrl}/oauth/gmail/callback?state=${state}&code=auth-code-1`);
+    expect(res.status).toBe(200);
+
+    await waitFor(() => fakeAdapter.sentMessages.length > sentBefore);
+    const sent = fakeAdapter.sentMessages[fakeAdapter.sentMessages.length - 1]!;
+    expect(sent.externalUserId).toBe(identity?.externalId);
+    expect(sent.text).toContain(emailAddress);
+    expect(sent.text).toContain("Connected");
+
+    const conversationRepo = new ConversationRepo();
+    await waitForAsync(async () => {
+      const history = await conversationRepo.loadHistory(channelIdentityId);
+      return history.some((h) => h.role === "assistant" && h.content === sent.text);
+    });
   });
 
   it("returns 404 for an unknown provider", async () => {
