@@ -118,7 +118,8 @@ src/
   api/
     server.ts      # hosts inbound channel webhooks
     routes/channels/  # one route file per platform
-  compliance/      # audit logging (append-only); consent/retention/DSAR are planned, not built yet
+  compliance/      # audit logging (append-only) and first-contact consent capture;
+                   #   retention/redaction/DSAR are planned, not built yet
   db/              # Drizzle schema, migrations, repositories
   config/          # env parsing (zod, fails fast at boot) and constants
 scripts/           # CLI entry points — chat, claim:start/resume, email:connect/check
@@ -145,7 +146,8 @@ npm install
 cp .env.example .env
 # fill in DATABASE_URL at minimum, plus your chosen LLM provider's key (see below)
 
-npm run db:migrate      # creates the app's own tables (audit log, email connections, channel identities/history)
+npm run db:migrate      # creates the app's own tables (users, channel identities/history,
+                         # consents, email connections, claim ownership, audit log)
 ```
 
 There's no separate command to set up LangGraph's own checkpoint tables — every entry point (`chat`, `claim:start`, `claim:resume`) calls `setupCheckpointer()` on startup, which creates them if missing.
@@ -155,6 +157,8 @@ There's no separate command to set up LangGraph's own checkpoint tables — ever
 Everything is validated at boot by `src/config/env.ts` (zod) — the process exits immediately with a clear message if something required is missing or malformed, rather than failing confusingly later.
 
 Only `DATABASE_URL` is unconditionally required. Every provider (flight data, weather, email, payments, and the LLM) falls back to an in-memory fake adapter if its key isn't set, so you can run most of this with nothing but a database configured. See `.env.example` for the full list with explanations.
+
+`NODE_ENV=production` additionally **requires** `TELEGRAM_WEBHOOK_SECRET`, `PUBLIC_URL`, and `TOKEN_ENCRYPTION_KEY` — boot fails immediately, naming every one that's missing, rather than discovering the gap at request time (e.g. an unauthenticated webhook, or a broken OAuth link).
 
 ---
 
@@ -220,6 +224,21 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
 
 If `TELEGRAM_BOT_TOKEN` isn't set, `createTelegramAdapter()` falls back to `FakeChannelAdapter` (records instead of sending) — same convention as every other provider in this repo.
 
+### How a remote user connects their own inbox
+
+Every user who messages the bot — on Telegram or any future channel — gets their own identity, their own consent record, their own email connection, and their own claims, fully isolated from every other user's (see `src/db/schema.ts`'s `users` / `channel_identities` / `email_connections` / `claims` tables, and `src/operator/tools.ts`'s per-user authorization checks). Nothing here assumes a single developer using their own accounts.
+
+1. **First contact.** The first message from a new (channel, externalId) pair gets a fixed data-use notice — not LLM-generated, deliberately, same reasoning as the human-approval gate — describing what's collected and why, and requires an explicit "yes" (or similar) before anything else happens. See `src/compliance/consent.ts`. **The notice text is a placeholder** — it needs a real privacy policy link and company/DPO contact details before this reaches real users (see [Legal & compliance disclaimer](#legal--compliance-disclaimer)).
+2. **Connecting email.** The user says something like "connect my gmail." The bot replies with a link immediately — it does not block waiting for them to finish it. The user opens the link in their own browser, authorizes on Google's/Microsoft's real consent screen, and lands on a minimal confirmation page. The bot then sends a proactive "Connected" message back into the same chat on its own — no polling, no second message needed from the user.
+3. **Ownership.** If a mailbox that's already connected to one user gets reconnected by a different user (who just proved control of it via a real, completed OAuth flow), ownership reassigns to them, and the change is written to the audit log (`entryType: "mailbox_reassigned"`).
+
+Requires `PUBLIC_URL` (the public HTTPS origin this server is reachable at, no trailing slash) in addition to the Telegram setup above. Manual, one-time prerequisites before this works for real (non-developer) users — not code:
+
+- Register `${PUBLIC_URL}/oauth/gmail/callback` and `${PUBLIC_URL}/oauth/outlook/callback` as authorized redirect URIs in Google Cloud Console / Azure (separate from the localhost URI the CLI's local flow below uses).
+- Move the Google OAuth consent screen out of "Testing" mode — `gmail.readonly` is a sensitive scope, and Google requires an app verification review before real third-party users (not just your own account) can complete it. This can take real review time — start it early.
+
+`npm run chat`'s `connect_email` uses this same hosted flow now too — you'll get a link to open in your own browser rather than one that opens automatically. `npm run email:connect -- gmail` (below) is a separate, simpler local-loopback flow that still opens/blocks locally, kept for quick local dev convenience.
+
 ---
 
 ## Running it
@@ -248,7 +267,7 @@ Resumes a paused claim (e.g. once you have a real airline reply to paste in) —
 npm run email:connect -- gmail     # or: outlook
 npm run email:check
 ```
-One-time OAuth connection to an inbox, then a sanity check that lists recent messages and flags which look like booking confirmations.
+One-time OAuth connection to an inbox for the local CLI identity, then a sanity check that lists recent messages and flags which look like booking confirmations. This is the local-loopback flow (opens/blocks locally) — see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox) for the hosted flow real, remote users go through.
 
 ---
 
@@ -274,7 +293,8 @@ Following the staged plan in `CLAUDE.md`:
 - ✅ **Stage 0** — project scaffolding, env validation, Postgres + LangGraph checkpointing.
 - ✅ **Stage 1** — domain core (`src/domain/`) and all data providers, each with a fake adapter and unit tests.
 - ✅ **Stage 2** — the full graph, prompts, the human-approval gate, audit logging, and (beyond the original plan) the conversational chat operator, multi-provider LLM support, and a messaging-channel layer (Telegram wired up; Discord/WhatsApp/Viber/Facebook/email follow the same adapter shape).
-- ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` currently has only append-only audit logging — **no consent capture, retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**, and there's no `claim.repo.ts`/`user.repo.ts` — claim state currently lives only in the LangGraph checkpointer, not a queryable table. Note this now also applies to channel identities/history (`channel_identities`, `conversation_messages`) — a WhatsApp phone number or Telegram chat id is PII the moment it's stored, and none of it is covered by DSAR export/delete or retention yet.
+- ✅ **Multi-tenant hosted OAuth** (beyond the original plan, driven by real remote users needing to connect their own inbox over a messaging channel — see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox)): a `users` identity model separate from `channel_identities`, per-user `email_connections` (with real-OAuth-verified reassignment on reconnect), a non-blocking hosted OAuth flow with PKCE, per-user authorization on every claim-touching tool (`src/operator/tools.ts`), first-contact consent capture, and statelessness for horizontal scale (no in-process caches — every entry point can be handled by any instance).
+- ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` has append-only audit logging and first-contact consent capture (the consent notice text is a **placeholder**, not reviewed legal copy — see [Legal & compliance disclaimer](#legal--compliance-disclaimer)), but **no retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**. A WhatsApp phone number or Telegram chat id is PII the moment it's stored, and none of it — nor any other user data — is covered by DSAR export/delete or retention yet. Claim state itself still lives only in the LangGraph checkpointer; `claims` (added for ownership/authorization) is a thin id+status mirror, not the full claim record.
 
 ---
 
@@ -284,6 +304,6 @@ This project handles EU passenger personal data and is designed to eventually mo
 
 - Entity registration, tax treatment, and Stripe Connect's legal/compliance setup.
 - Any autonomous send path that bypasses the human-approval node — none exists, and none should be built without a track record first.
-- A full GDPR compliance sign-off — the audit log exists, but consent, retention, and data-subject-rights handling do not yet (see [Project status](#project-status)).
+- A full GDPR compliance sign-off — the audit log and first-contact consent capture exist, but the consent notice (`src/compliance/consent.ts`'s `CONSENT_NOTICE`) is a **placeholder** with no real privacy policy link or company/DPO contact details, and retention, redaction, and data-subject-rights (DSAR) handling don't exist yet (see [Project status](#project-status)). Don't point real users at this until that notice is replaced with reviewed legal copy.
 
 Nothing in this codebase constitutes legal advice, and the EC261 rules encoded in `src/domain/ec261/` include documented simplifications in places (see the comments in `constants.ts` and `eligibility.ts`) that should be reviewed before being relied on for a real claim.
