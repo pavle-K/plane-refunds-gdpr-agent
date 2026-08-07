@@ -107,10 +107,10 @@ describe.skipIf(!canRun)("multi-tenant authorization on OperatorTools (real Post
     ).rejects.toThrow(ClaimAuthorizationError);
   });
 
-  it("requires a threadId when this instance never started or touched a claim", async () => {
+  it("requires a threadId when this user has never started or touched a claim", async () => {
     const userA = await makeOperatorTools();
     await expect(userA.tools.dispatch("get_claim_status", {})).rejects.toThrow(
-      "No claim thread specified and none started yet this session.",
+      "No claim thread specified and none started yet.",
     );
   });
 });

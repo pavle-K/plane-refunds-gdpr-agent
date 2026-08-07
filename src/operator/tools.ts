@@ -157,32 +157,43 @@ export class OperatorTools {
   private readonly deps = createRealGraphDeps();
   private readonly graph = buildGraph(this.deps);
   private readonly claimRepo = new ClaimRepo();
-  private lastThreadId: string | null = null;
 
   /** The user this instance acts on behalf of — every email-connection lookup
-   * and (from Segment 5) claim-ownership check is scoped to this id.
-   * channelIdentityId is the specific chat connect_email was called from,
-   * recorded on the pending OAuth flow so the callback route knows where to
-   * send the "you're connected" confirmation. */
+   * and claim-ownership check is scoped to this id. channelIdentityId is the
+   * specific chat connect_email was called from, recorded on the pending
+   * OAuth flow so the callback route knows where to send the "you're
+   * connected" confirmation.
+   *
+   * Deliberately no per-conversation in-memory state on this class (see the
+   * removed lastThreadId) — a fresh instance is constructed per turn
+   * (src/operator/session.ts), so any request can land on any horizontally
+   * scaled process and still work: "the most recently touched claim"
+   * (resolveThreadId below) is a DB query, not instance memory. */
   constructor(
     private readonly userId: string,
     private readonly channelIdentityId: string,
   ) {}
 
-  /** Resolves a threadId (or falls back to the last one this instance touched)
-   * AND verifies the calling user owns it before returning it — every caller
-   * of this method is about to read or act on a LangGraph thread, and none of
-   * that should happen without this check. */
+  /** Resolves an explicit threadId (verifying the calling user owns it) or,
+   * if omitted, looks up the claim this user most recently touched —
+   * inherently already scoped to this.userId, so no separate ownership check
+   * is needed on that path. Either way, every caller of this method is about
+   * to read or act on a LangGraph thread, and none of that should happen
+   * without this. */
   private async resolveThreadId(threadId?: string): Promise<string> {
-    const id = threadId ?? this.lastThreadId;
-    if (!id) {
-      throw new Error("No claim thread specified and none started yet this session.");
+    if (threadId) {
+      const claim = await this.claimRepo.findById(threadId);
+      if (!claim || claim.userId !== this.userId) {
+        throw new ClaimAuthorizationError(threadId);
+      }
+      return threadId;
     }
-    const claim = await this.claimRepo.findById(id);
-    if (!claim || claim.userId !== this.userId) {
-      throw new ClaimAuthorizationError(id);
+
+    const mostRecent = await this.claimRepo.findMostRecentForUser(this.userId);
+    if (!mostRecent) {
+      throw new Error("No claim thread specified and none started yet.");
     }
-    return id;
+    return mostRecent.id;
   }
 
   private config(threadId: string) {
@@ -192,9 +203,9 @@ export class OperatorTools {
   /** Keeps the claims ownership+status mirror (schema.ts's `claims` table)
    * current after every action that can move a claim forward — both so
    * get_claim_status-adjacent tooling reflects reality, and so
-   * ClaimRepo.findMostRecentForUser (the DB-backed replacement for this
-   * instance's in-memory lastThreadId, see Segment 6) reflects the claim the
-   * user actually last acted on, not just the one they started. */
+   * ClaimRepo.findMostRecentForUser (resolveThreadId's fallback when no
+   * threadId is given) reflects the claim the user actually last acted on,
+   * not just the one they started. */
   private async updateClaimStatusMirror(threadId: string, result: Record<string, unknown>): Promise<void> {
     const status = typeof result["claimStatus"] === "string" ? result["claimStatus"] : "unknown";
     await this.claimRepo.updateStatus(threadId, status);
@@ -296,7 +307,6 @@ export class OperatorTools {
     }
 
     const threadId = `claim-${Date.now()}`;
-    this.lastThreadId = threadId;
     // Recorded before graph.invoke, not after — if invoke fails partway, an
     // orphan ownership row pointing at a thread that never actually started
     // is harmless; the reverse (a thread that exists in the checkpointer with
@@ -331,7 +341,6 @@ export class OperatorTools {
 
   private async submitApprovalDecision(input: ApprovalInput) {
     const threadId = await this.resolveThreadId(input.threadId);
-    this.lastThreadId = threadId;
 
     if (input.action === "edit" && !input.editedText) {
       return { error: "action 'edit' requires editedText with the full replacement letter." };
@@ -366,7 +375,6 @@ export class OperatorTools {
 
   private async submitAirlineReply(threadId: string | undefined, replyText: string | undefined) {
     const id = await this.resolveThreadId(threadId);
-    this.lastThreadId = id;
 
     const resumeValue = replyText ? { type: "reply" as const, airlineReplyText: replyText } : { type: "timeout" as const };
     const result = (await this.graph.invoke(new Command({ resume: resumeValue }), this.config(id))) as Record<
@@ -379,7 +387,6 @@ export class OperatorTools {
 
   private async submitPaymentConfirmation(input: PaymentInput) {
     const threadId = await this.resolveThreadId(input.threadId);
-    this.lastThreadId = threadId;
 
     const result = (await this.graph.invoke(
       new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),

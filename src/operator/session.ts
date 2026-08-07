@@ -19,24 +19,6 @@ function buildSystemPrompt(): string {
   return `${BASE_SYSTEM_PROMPT}\n\n## Current date and time\n\nRight now it is ${now.toISOString()} (UTC) — today's date is ${now.toISOString().slice(0, 10)}. Always resolve dates the user gives you (a bare month name, "last week", "this year", a relative range) against THIS date, never against your training data or an assumed year.`;
 }
 
-/**
- * OperatorTools tracks "the last claim thread touched" as in-memory instance
- * state (a chat convenience — "approve it" without repeating a threadId). That
- * has to stay scoped per conversation, not shared globally, once multiple
- * channels/users hit this process concurrently — hence one instance per
- * channel identity, kept for the life of the process.
- */
-const operatorToolsByIdentity = new Map<string, OperatorTools>();
-
-function getOperatorTools(channelIdentityId: string, userId: string): OperatorTools {
-  let tools = operatorToolsByIdentity.get(channelIdentityId);
-  if (!tools) {
-    tools = new OperatorTools(userId, channelIdentityId);
-    operatorToolsByIdentity.set(channelIdentityId, tools);
-  }
-  return tools;
-}
-
 export interface IncomingTurn {
   channel: string;
   externalId: string;
@@ -57,6 +39,14 @@ export interface IncomingTurn {
  * Gates on consent before any of that: an unconsented user's message never
  * reaches the LLM or a tool — see src/compliance/consent.ts's decideConsent,
  * which is where the actual decision logic (and its tests) live.
+ *
+ * Constructs a fresh OperatorTools every turn rather than caching one per
+ * identity — it holds no per-conversation state of its own (see its own doc
+ * comment), so there's nothing to gain from reusing an instance, and caching
+ * one per process would break the moment this runs as more than one
+ * horizontally-scaled instance, since a later turn from the same identity
+ * could land on a different process. All the state that needs to survive
+ * across turns already lives in Postgres.
  */
 export async function handleTurn(
   llm: LlmClient,
@@ -94,7 +84,7 @@ export async function handleTurn(
     return consentDecision.responseText;
   }
 
-  const tools = getOperatorTools(channelIdentityId, userId);
+  const tools = new OperatorTools(userId, channelIdentityId);
 
   const responseText = await llm.completeWithTools({
     system: buildSystemPrompt(),

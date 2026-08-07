@@ -13,6 +13,7 @@ import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
 import { createLlmClient, FakeLlmClient } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
+import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
 import { env } from "../config/env.js";
 
 async function main() {
@@ -30,8 +31,8 @@ async function main() {
   app.use(express.json());
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
-  app.use(createTelegramWebhookRouter(llm));
-  app.use(createOAuthCallbackRouter());
+  app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(llm));
+  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter());
 
   const server = app.listen(env.PORT, () => {
     console.log(`API listening on :${env.PORT} (LLM_PROVIDER=${env.LLM_PROVIDER})`);
