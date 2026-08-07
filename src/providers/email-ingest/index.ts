@@ -38,19 +38,20 @@ function buildTokenAccessor(provider: EmailProviderName, connection: EmailConnec
 }
 
 /**
- * Auto-detects a connected inbox (gmail checked first, then outlook — see
- * scripts/connect-email.ts) and returns the matching real adapter, refreshing
- * the access token transparently on expiry. Falls back to the fake adapter if
- * nothing is connected, TOKEN_ENCRYPTION_KEY isn't set, or NODE_ENV is "test".
+ * Auto-detects the calling user's connected inbox (gmail checked first, then
+ * outlook — see scripts/connect-email.ts) and returns the matching real
+ * adapter, refreshing the access token transparently on expiry. Falls back to
+ * the fake adapter if nothing is connected, TOKEN_ENCRYPTION_KEY isn't set, or
+ * NODE_ENV is "test".
  */
-export async function createEmailIngestProvider(): Promise<EmailIngestProvider> {
+export async function createEmailIngestProvider(userId: string): Promise<EmailIngestProvider> {
   if (env.NODE_ENV === "test" || !env.TOKEN_ENCRYPTION_KEY) {
     return new FakeEmailIngestAdapter();
   }
 
   const repo = new EmailConnectionRepo();
   for (const provider of ["gmail", "outlook"] as const) {
-    const connection = await repo.findByProvider(provider);
+    const connection = await repo.findByUserAndProvider(userId, provider);
     if (!connection) {
       continue;
     }

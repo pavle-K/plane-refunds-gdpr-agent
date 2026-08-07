@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { LlmClient } from "../agent/llm/llm.port.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
+import { UserRepo } from "../db/repositories/user.repo.js";
 import { TOOL_DEFINITIONS, OperatorTools } from "./tools.js";
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
@@ -26,10 +27,10 @@ function buildSystemPrompt(): string {
  */
 const operatorToolsByIdentity = new Map<string, OperatorTools>();
 
-function getOperatorTools(channelIdentityId: string): OperatorTools {
+function getOperatorTools(channelIdentityId: string, userId: string): OperatorTools {
   let tools = operatorToolsByIdentity.get(channelIdentityId);
   if (!tools) {
-    tools = new OperatorTools();
+    tools = new OperatorTools(userId);
     operatorToolsByIdentity.set(channelIdentityId, tools);
   }
   return tools;
@@ -55,8 +56,14 @@ export interface IncomingTurn {
 export async function handleTurn(llm: LlmClient, turn: IncomingTurn): Promise<string> {
   const repo = new ConversationRepo();
   const channelIdentityId = await repo.getOrCreateIdentity(turn.channel, turn.externalId);
+  const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
+  if (!userId) {
+    // getOrCreateIdentity always links a user to every channel identity it
+    // creates/returns — this would only happen if the DB was hand-edited.
+    throw new Error(`Channel identity ${channelIdentityId} has no linked user.`);
+  }
   const history = await repo.loadHistory(channelIdentityId);
-  const tools = getOperatorTools(channelIdentityId);
+  const tools = getOperatorTools(channelIdentityId, userId);
 
   const responseText = await llm.completeWithTools({
     system: buildSystemPrompt(),

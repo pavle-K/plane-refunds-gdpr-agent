@@ -149,6 +149,10 @@ export class OperatorTools {
   private readonly graph = buildGraph(this.deps);
   private lastThreadId: string | null = null;
 
+  /** The user this instance acts on behalf of — every email-connection lookup
+   * and (from Segment 5) claim-ownership check is scoped to this id. */
+  constructor(private readonly userId: string) {}
+
   private resolveThreadId(threadId?: string): string {
     const id = threadId ?? this.lastThreadId;
     if (!id) {
@@ -201,6 +205,7 @@ export class OperatorTools {
 
     const repo = new EmailConnectionRepo();
     await repo.upsert({
+      userId: this.userId,
       provider,
       emailAddress,
       accessToken: tokens.accessToken,
@@ -213,7 +218,10 @@ export class OperatorTools {
 
   private async getEmailConnectionStatus() {
     const repo = new EmailConnectionRepo();
-    const [gmail, outlook] = await Promise.all([repo.findByProvider("gmail"), repo.findByProvider("outlook")]);
+    const [gmail, outlook] = await Promise.all([
+      repo.findByUserAndProvider(this.userId, "gmail"),
+      repo.findByUserAndProvider(this.userId, "outlook"),
+    ]);
     return {
       gmail: gmail ? { connected: true, emailAddress: gmail.emailAddress } : { connected: false },
       outlook: outlook ? { connected: true, emailAddress: outlook.emailAddress } : { connected: false },
@@ -221,7 +229,7 @@ export class OperatorTools {
   }
 
   private async scanInbox(input: ScanInboxInput) {
-    const provider = await createEmailIngestProvider();
+    const provider = await createEmailIngestProvider(this.userId);
     if (provider.constructor.name === "FakeEmailIngestAdapter") {
       return { error: "No inbox connected — call connect_email first." };
     }

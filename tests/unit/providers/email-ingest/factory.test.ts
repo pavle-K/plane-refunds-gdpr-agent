@@ -4,7 +4,7 @@ import { FakeEmailIngestAdapter } from "../../../../src/providers/email-ingest/f
 
 describe("createEmailIngestProvider", () => {
   it("always returns the fake adapter under NODE_ENV=test, regardless of any stored connection", async () => {
-    const provider = await createEmailIngestProvider();
+    const provider = await createEmailIngestProvider("test-user");
     expect(provider).toBeInstanceOf(FakeEmailIngestAdapter);
   });
 });
