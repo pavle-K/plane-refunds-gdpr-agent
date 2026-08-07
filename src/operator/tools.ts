@@ -4,10 +4,22 @@ import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
 import { buildHostedAuthorizationUrl } from "../providers/email-ingest/hosted-oauth.js";
 import { EmailConnectionRepo } from "../db/repositories/email-connection.repo.js";
+import { ClaimRepo } from "../db/repositories/claim.repo.js";
 import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import type { Booking } from "../domain/claim/claim.types.js";
+
+/** Thrown by resolveThreadId when a threadId doesn't exist or belongs to a
+ * different user. Deliberately worded the same either way — this is an
+ * internal chat tool, not a public API, but there's still no reason to
+ * confirm to a caller that a *different* user's claim thread exists. */
+export class ClaimAuthorizationError extends Error {
+  constructor(threadId: string) {
+    super(`No claim thread "${threadId}" found for this user.`);
+    this.name = "ClaimAuthorizationError";
+  }
+}
 
 export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
@@ -144,6 +156,7 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
 export class OperatorTools {
   private readonly deps = createRealGraphDeps();
   private readonly graph = buildGraph(this.deps);
+  private readonly claimRepo = new ClaimRepo();
   private lastThreadId: string | null = null;
 
   /** The user this instance acts on behalf of — every email-connection lookup
@@ -156,16 +169,35 @@ export class OperatorTools {
     private readonly channelIdentityId: string,
   ) {}
 
-  private resolveThreadId(threadId?: string): string {
+  /** Resolves a threadId (or falls back to the last one this instance touched)
+   * AND verifies the calling user owns it before returning it — every caller
+   * of this method is about to read or act on a LangGraph thread, and none of
+   * that should happen without this check. */
+  private async resolveThreadId(threadId?: string): Promise<string> {
     const id = threadId ?? this.lastThreadId;
     if (!id) {
       throw new Error("No claim thread specified and none started yet this session.");
+    }
+    const claim = await this.claimRepo.findById(id);
+    if (!claim || claim.userId !== this.userId) {
+      throw new ClaimAuthorizationError(id);
     }
     return id;
   }
 
   private config(threadId: string) {
     return { configurable: { thread_id: threadId } };
+  }
+
+  /** Keeps the claims ownership+status mirror (schema.ts's `claims` table)
+   * current after every action that can move a claim forward — both so
+   * get_claim_status-adjacent tooling reflects reality, and so
+   * ClaimRepo.findMostRecentForUser (the DB-backed replacement for this
+   * instance's in-memory lastThreadId, see Segment 6) reflects the claim the
+   * user actually last acted on, not just the one they started. */
+  private async updateClaimStatusMirror(threadId: string, result: Record<string, unknown>): Promise<void> {
+    const status = typeof result["claimStatus"] === "string" ? result["claimStatus"] : "unknown";
+    await this.claimRepo.updateStatus(threadId, status);
   }
 
   async dispatch(name: string, input: Record<string, unknown>): Promise<unknown> {
@@ -265,6 +297,12 @@ export class OperatorTools {
 
     const threadId = `claim-${Date.now()}`;
     this.lastThreadId = threadId;
+    // Recorded before graph.invoke, not after — if invoke fails partway, an
+    // orphan ownership row pointing at a thread that never actually started
+    // is harmless; the reverse (a thread that exists in the checkpointer with
+    // no ownership row) would permanently lock its own creator out of it via
+    // resolveThreadId's ownership check.
+    await this.claimRepo.create(threadId, this.userId, "draft");
 
     const booking: Booking = {
       bookingReference: input.bookingReference ?? `CHAT-${Date.now()}`,
@@ -286,12 +324,13 @@ export class OperatorTools {
       { claimId: threadId, claimStatus: "draft", booking },
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
 
     return { threadId, ...this.summarize(result) };
   }
 
   private async submitApprovalDecision(input: ApprovalInput) {
-    const threadId = this.resolveThreadId(input.threadId);
+    const threadId = await this.resolveThreadId(input.threadId);
     this.lastThreadId = threadId;
 
     if (input.action === "edit" && !input.editedText) {
@@ -307,12 +346,13 @@ export class OperatorTools {
       new Command({ resume: decision }),
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
 
     return { threadId, ...this.summarize(result) };
   }
 
   private async getClaimStatus(threadId?: string) {
-    const id = this.resolveThreadId(threadId);
+    const id = await this.resolveThreadId(threadId);
     const state = await this.graph.getState(this.config(id));
     return {
       threadId: id,
@@ -325,7 +365,7 @@ export class OperatorTools {
   }
 
   private async submitAirlineReply(threadId: string | undefined, replyText: string | undefined) {
-    const id = this.resolveThreadId(threadId);
+    const id = await this.resolveThreadId(threadId);
     this.lastThreadId = id;
 
     const resumeValue = replyText ? { type: "reply" as const, airlineReplyText: replyText } : { type: "timeout" as const };
@@ -333,17 +373,19 @@ export class OperatorTools {
       string,
       unknown
     >;
+    await this.updateClaimStatusMirror(id, result);
     return { threadId: id, ...this.summarize(result) };
   }
 
   private async submitPaymentConfirmation(input: PaymentInput) {
-    const threadId = this.resolveThreadId(input.threadId);
+    const threadId = await this.resolveThreadId(input.threadId);
     this.lastThreadId = threadId;
 
     const result = (await this.graph.invoke(
       new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
     return { threadId, ...this.summarize(result) };
   }
 
