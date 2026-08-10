@@ -7,9 +7,14 @@
  * What this does NOT do — and can't, since both are actions on a console this
  * script has no access to — is register the OAuth redirect URI with Google/
  * Microsoft, or add yourself as a test user on a Google OAuth consent screen
- * still in "Testing" mode. It prints the exact values you need for both,
- * every run, since the tunnel URL (and so the redirect URI) changes on a free
- * ngrok tunnel each time it restarts.
+ * still in "Testing" mode. It prints the exact values you need for both.
+ *
+ * Set NGROK_STATIC_DOMAIN in .env to a domain from https://dashboard.ngrok.com/domains
+ * (ngrok's free plan includes one) and every run uses that exact domain —
+ * register its redirect URI in Google/Microsoft once, never touch it again.
+ * Without it, ngrok picks a domain itself; recent free-tier accounts get one
+ * persistent "dev domain" reused automatically, but this makes it explicit
+ * rather than relying on that default.
  *
  * Usage: npm run dev:telegram
  */
@@ -48,14 +53,24 @@ function shutdown(exitCode: number): never {
 }
 
 async function ensureNgrokTunnel(): Promise<string> {
+  const staticDomain = process.env["NGROK_STATIC_DOMAIN"];
+
   const existing = await detectNgrokUrl(env.PORT);
   if (existing) {
+    if (staticDomain && !existing.includes(staticDomain)) {
+      console.warn(
+        `Note: a tunnel is already running (${existing}) that doesn't match ` +
+          `NGROK_STATIC_DOMAIN=${staticDomain} — using the running one. Stop it first ` +
+          "(check for another ngrok process) if you want the static domain instead.",
+      );
+    }
     console.log(`Found an existing ngrok tunnel to port ${env.PORT}: ${existing}`);
     return existing;
   }
 
-  console.log(`Starting ngrok (tunnel to port ${env.PORT})...`);
-  const ngrok = spawn("ngrok", ["http", String(env.PORT)], { stdio: "ignore" });
+  const ngrokArgs = staticDomain ? ["http", "--domain", staticDomain, String(env.PORT)] : ["http", String(env.PORT)];
+  console.log(`Starting ngrok (tunnel to port ${env.PORT}${staticDomain ? `, domain ${staticDomain}` : ""})...`);
+  const ngrok = spawn("ngrok", ngrokArgs, { stdio: "ignore" });
   children.push(ngrok);
 
   const spawnFailed = await new Promise<boolean>((resolve) => {
@@ -160,6 +175,13 @@ async function main() {
     for (const provider of providers) {
       console.log(`     ${tunnelUrl}/oauth/${provider}/callback`);
     }
+    console.log(
+      process.env["NGROK_STATIC_DOMAIN"]
+        ? "   (NGROK_STATIC_DOMAIN is set — this URL is permanent, register it once and you're done.)"
+        : "   (No NGROK_STATIC_DOMAIN set — this URL may change on the next restart, on some accounts.\n" +
+            "   Set NGROK_STATIC_DOMAIN in .env to a domain from https://dashboard.ngrok.com/domains\n" +
+            "   to make it permanent and only ever do this once.)",
+    );
   } else {
     console.log("1. (Skipped — no GMAIL_OAUTH_CLIENT_ID/OUTLOOK_OAUTH_CLIENT_ID set.)");
   }
