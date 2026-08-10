@@ -3,6 +3,9 @@ import { completeHostedFlow } from "../../providers/email-ingest/hosted-oauth.js
 import { createChannelAdapter } from "../../channels/index.js";
 import type { ChannelAdapter } from "../../channels/channel.port.js";
 import { ConversationRepo } from "../../db/repositories/conversation.repo.js";
+import { UserRepo } from "../../db/repositories/user.repo.js";
+import { resumeConversationAfterEmailConnected } from "../../operator/session.js";
+import type { LlmClient } from "../../agent/llm/llm.port.js";
 
 /**
  * The public landing page a user's browser hits after they finish Google's or
@@ -36,15 +39,24 @@ function renderPage(title: string, message: string): string {
 
 const TRY_AGAIN_MESSAGE = "This link is no longer valid — please ask the bot to send you a new connection link.";
 
+function fixedConnectedText(emailAddress: string): string {
+  return `Connected — ${emailAddress} is linked. You can ask me to check your inbox now.`;
+}
+
 /**
  * Pushes the "you're connected" confirmation to the chat the flow was started
- * from, and records the same text as an assistant-role turn so the LLM's
- * next-turn history stays consistent with what the user actually saw. Never
- * throws — a failed push (e.g. the channel API is down) shouldn't turn a
- * successful connection into a failed HTTP response; it's logged instead. The
- * connection itself is already durably stored by the time this runs.
+ * from. Prefers resumeConversationAfterEmailConnected — which feeds the LLM
+ * the real conversation history plus tool access, so a pending request like
+ * "analyze my emails" gets carried out immediately instead of just
+ * acknowledged — and falls back to a fixed confirmation if that fails for any
+ * reason (LLM call error, no linked user), so a broken resumption never means
+ * silence instead of a confirmation. Never throws itself — a failed push
+ * (e.g. the channel API is down) shouldn't turn a successful connection into
+ * a failed HTTP response; it's logged instead. The connection itself is
+ * already durably stored by the time this runs.
  */
 async function sendConnectedNotification(
+  llm: LlmClient,
   channelIdentityId: string,
   emailAddress: string,
   getChannelAdapter: (channel: string) => ChannelAdapter,
@@ -56,7 +68,21 @@ async function sendConnectedNotification(
     return;
   }
 
-  const confirmationText = `Connected — ${emailAddress} is linked. You can ask me to check your inbox now.`;
+  let confirmationText: string;
+  const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
+  if (userId) {
+    try {
+      confirmationText = await resumeConversationAfterEmailConnected(llm, { channelIdentityId, userId, emailAddress });
+    } catch (cause) {
+      console.error("OAuth callback: failed to resume the conversation via the LLM — falling back:", cause);
+      confirmationText = fixedConnectedText(emailAddress);
+      await conversationRepo.appendTurn(channelIdentityId, "assistant", confirmationText);
+    }
+  } else {
+    console.error(`OAuth callback: no user found for channel identity ${channelIdentityId} — cannot resume.`);
+    confirmationText = fixedConnectedText(emailAddress);
+    await conversationRepo.appendTurn(channelIdentityId, "assistant", confirmationText);
+  }
 
   try {
     const adapter = getChannelAdapter(identity.channel);
@@ -67,11 +93,12 @@ async function sendConnectedNotification(
   } catch (cause) {
     console.error(`OAuth callback: unexpected error notifying ${identity.channel}:${identity.externalId}:`, cause);
   }
-
-  await conversationRepo.appendTurn(channelIdentityId, "assistant", confirmationText);
 }
 
-export function createOAuthCallbackRouter(getChannelAdapter: (channel: string) => ChannelAdapter = createChannelAdapter): Router {
+export function createOAuthCallbackRouter(
+  llm: LlmClient,
+  getChannelAdapter: (channel: string) => ChannelAdapter = createChannelAdapter,
+): Router {
   const router = Router();
 
   router.get("/oauth/:provider/callback", async (req: Request, res: Response) => {
@@ -120,7 +147,7 @@ export function createOAuthCallbackRouter(getChannelAdapter: (channel: string) =
       .type("html")
       .send(renderPage("Connected", `${result.value.emailAddress} is now connected — you can return to your chat.`));
 
-    await sendConnectedNotification(result.value.channelIdentityId, result.value.emailAddress, getChannelAdapter);
+    await sendConnectedNotification(llm, result.value.channelIdentityId, result.value.emailAddress, getChannelAdapter);
   });
 
   return router;

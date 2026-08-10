@@ -41,7 +41,7 @@ async function main() {
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
   app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(llm));
-  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter());
+  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(llm));
 
   const server = app.listen(env.PORT, () => {
     console.log(`API listening on :${env.PORT} (LLM_PROVIDER=${env.LLM_PROVIDER})`);
