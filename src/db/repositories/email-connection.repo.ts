@@ -112,4 +112,12 @@ export class EmailConnectionRepo {
       })
       .where(and(eq(emailConnections.provider, provider), eq(emailConnections.emailAddress, emailAddress)));
   }
+
+  /** Used by disconnect_email/forget_my_data — deletes the stored (encrypted)
+   * tokens outright. Callers should revoke the token with the provider first
+   * where possible (see oauth-providers.ts's revokeToken) — this method only
+   * removes our own copy, it has no way to invalidate the grant itself. */
+  async delete(userId: string, provider: EmailProviderName): Promise<void> {
+    await db.delete(emailConnections).where(and(eq(emailConnections.userId, userId), eq(emailConnections.provider, provider)));
+  }
 }

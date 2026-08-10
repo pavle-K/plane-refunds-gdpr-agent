@@ -46,4 +46,19 @@ export class ClaimRepo {
       .limit(1);
     return rows[0] ?? null;
   }
+
+  /** Every claim this user owns, any status — used by erasure requests to
+   * decide, per claim, whether it's safe to delete (never sent) or must be
+   * kept (see OperatorTools.forgetMyData). */
+  async findAllForUser(userId: string): Promise<ClaimOwnershipRow[]> {
+    return db.select().from(claims).where(eq(claims.userId, userId));
+  }
+
+  /** Deletes only the ownership/status mirror row — callers that also need
+   * the underlying LangGraph checkpoint state gone must call
+   * PostgresSaver.deleteThread(id) themselves (see OperatorTools.forgetMyData);
+   * this repo has no reference to the checkpointer. */
+  async delete(id: string): Promise<void> {
+    await db.delete(claims).where(eq(claims.id, id));
+  }
 }

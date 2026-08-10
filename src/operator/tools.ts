@@ -2,13 +2,24 @@ import { Command } from "@langchain/langgraph";
 import type { LlmToolDefinition } from "../agent/llm/index.js";
 import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
+import { getCheckpointer } from "../agent/checkpointer.js";
 import { buildHostedAuthorizationUrl } from "../providers/email-ingest/hosted-oauth.js";
-import { EmailConnectionRepo } from "../db/repositories/email-connection.repo.js";
+import { EMAIL_OAUTH_PROVIDERS } from "../providers/email-ingest/oauth-providers.js";
+import { EmailConnectionRepo, type EmailProviderName } from "../db/repositories/email-connection.repo.js";
 import { ClaimRepo } from "../db/repositories/claim.repo.js";
+import { ConversationRepo } from "../db/repositories/conversation.repo.js";
+import { ConsentRepo } from "../db/repositories/consent.repo.js";
+import { DbAuditLog } from "../compliance/audit-log.js";
 import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import type { Booking } from "../domain/claim/claim.types.js";
+
+/** Claim statuses that mean nothing was ever actually sent to an airline —
+ * safe to fully delete on a forget_my_data request. Everything else (sent
+ * and beyond) is a real transaction/correspondence, kept for the legal-claims
+ * and financial record-keeping reasons GDPR Art. 17(3) allows for. */
+const PRE_SEND_CLAIM_STATUSES = new Set(["draft", "pending_approval", "declined"]);
 
 /** Thrown by resolveThreadId when a threadId doesn't exist or belongs to a
  * different user. Deliberately worded the same either way — this is an
@@ -151,6 +162,30 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
       required: ["receivedAmountCents", "connectedAccountId"],
     },
   },
+  {
+    name: "disconnect_email",
+    description:
+      "Disconnects the user's Gmail or Outlook inbox — revokes the authorization with the provider where " +
+      "possible and deletes the stored connection. Only call when the user explicitly asks to disconnect or " +
+      "remove access to an email account.",
+    inputSchema: {
+      type: "object",
+      properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
+      required: ["provider"],
+    },
+  },
+  {
+    name: "forget_my_data",
+    description:
+      "Deletes the user's data held by this bot: any connected email account (revoking authorization where " +
+      "possible), the full chat history, and the consent record. Any claim that was never actually sent to an " +
+      "airline is deleted too. A claim that WAS sent (or paid out) is kept, along with the audit log, for " +
+      "legal/financial record-keeping reasons required by law — always tell the user plainly what was kept and " +
+      "why, never silently. This is irreversible and erases this conversation's own history. Only call when the " +
+      "user has explicitly and unambiguously asked to delete/forget their data — never speculatively, and never " +
+      "from an ambiguous or joking remark.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 export class OperatorTools {
@@ -229,6 +264,10 @@ export class OperatorTools {
         return this.submitAirlineReply(input["threadId"] as string | undefined, input["replyText"] as string | undefined);
       case "submit_payment_confirmation":
         return this.submitPaymentConfirmation(input as unknown as PaymentInput);
+      case "disconnect_email":
+        return this.disconnectEmail(input["provider"] as EmailProviderName);
+      case "forget_my_data":
+        return this.forgetMyData();
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -256,6 +295,113 @@ export class OperatorTools {
     return {
       gmail: gmail ? { connected: true, emailAddress: gmail.emailAddress } : { connected: false },
       outlook: outlook ? { connected: true, emailAddress: outlook.emailAddress } : { connected: false },
+    };
+  }
+
+  /** Revokes with the provider where supported (Gmail; not Outlook — see
+   * oauth-providers.ts) and deletes the local connection regardless of
+   * whether revocation succeeded — a token we can't invalidate is still a
+   * token we shouldn't keep holding onto. */
+  private async disconnectEmail(provider: EmailProviderName) {
+    const repo = new EmailConnectionRepo();
+    const connection = await repo.findByUserAndProvider(this.userId, provider);
+    if (!connection) {
+      return { disconnected: false, reason: "not_connected" as const };
+    }
+
+    const setup = EMAIL_OAUTH_PROVIDERS[provider];
+    const revokedWithProvider = setup.revokeToken ? await setup.revokeToken(connection.refreshToken).catch(() => false) : false;
+
+    await repo.delete(this.userId, provider);
+    await new DbAuditLog().record({
+      userId: this.userId,
+      entryType: "email_disconnected",
+      payload: { provider, emailAddress: connection.emailAddress, revokedWithProvider },
+    });
+
+    return {
+      disconnected: true,
+      provider,
+      emailAddress: connection.emailAddress,
+      revokedWithProvider,
+      ...(revokedWithProvider
+        ? {}
+        : {
+            note:
+              `Could not automatically revoke this with ${provider === "gmail" ? "Google" : "Microsoft"} — the ` +
+              "stored connection is removed on our end, but tell the user they can also revoke it themselves via " +
+              "their account's security settings for full assurance.",
+          }),
+    };
+  }
+
+  /**
+   * Deletes everything that has no legal reason to be retained (email
+   * connection, chat history, consent record, any claim never actually sent
+   * to an airline) and keeps everything that does (a claim that WAS sent or
+   * paid out, and the audit log) — see GDPR Art. 17(3)'s legal-claims and
+   * legal-obligation exceptions to the right to erasure. Reports exactly
+   * what was kept and why so the caller can relay that plainly rather than
+   * silently keeping data the user asked to have deleted.
+   */
+  private async forgetMyData() {
+    const emailRepo = new EmailConnectionRepo();
+    const disconnectedEmails: { provider: EmailProviderName; emailAddress: string; revokedWithProvider: boolean }[] = [];
+    for (const provider of ["gmail", "outlook"] as const) {
+      const connection = await emailRepo.findByUserAndProvider(this.userId, provider);
+      if (!connection) {
+        continue;
+      }
+      const setup = EMAIL_OAUTH_PROVIDERS[provider];
+      const revokedWithProvider = setup.revokeToken
+        ? await setup.revokeToken(connection.refreshToken).catch(() => false)
+        : false;
+      await emailRepo.delete(this.userId, provider);
+      disconnectedEmails.push({ provider, emailAddress: connection.emailAddress, revokedWithProvider });
+    }
+
+    const checkpointer = getCheckpointer();
+    const allClaims = await this.claimRepo.findAllForUser(this.userId);
+    const deletedClaimIds: string[] = [];
+    const keptClaimIds: string[] = [];
+    for (const claim of allClaims) {
+      if (PRE_SEND_CLAIM_STATUSES.has(claim.status)) {
+        // Deletes the raw booking/passenger PII in the LangGraph checkpointer,
+        // not just this app's own ownership/status mirror row — the claims
+        // table was never the full record (see schema.ts).
+        await checkpointer.deleteThread(claim.id);
+        await this.claimRepo.delete(claim.id);
+        deletedClaimIds.push(claim.id);
+      } else {
+        keptClaimIds.push(claim.id);
+      }
+    }
+
+    await new ConversationRepo().deleteHistory(this.channelIdentityId);
+    await new ConsentRepo().deleteForUser(this.userId);
+
+    await new DbAuditLog().record({
+      userId: this.userId,
+      entryType: "data_erasure",
+      payload: { disconnectedEmails, deletedClaimIds, keptClaimIds },
+    });
+
+    return {
+      erased: true,
+      disconnectedEmails,
+      deletedClaimCount: deletedClaimIds.length,
+      keptClaims:
+        keptClaimIds.length > 0
+          ? {
+              count: keptClaimIds.length,
+              reason:
+                "These claims were actually sent to an airline (or paid out) — kept for legal/financial " +
+                "record-keeping required by law, not because the request wasn't honored.",
+            }
+          : null,
+      note:
+        "Chat history and the consent record are deleted. The audit log (proof the human-approval gate was " +
+        "followed for any sent claim) is kept for the same legal reasons as sent claims.",
     };
   }
 

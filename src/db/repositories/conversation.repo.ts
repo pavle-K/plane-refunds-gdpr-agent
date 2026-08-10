@@ -63,6 +63,13 @@ export class ConversationRepo {
     await db.insert(conversationMessages).values({ channelIdentityId, role, content });
   }
 
+  /** Used by forget_my_data — deletes chat history only, not the identity row
+   * itself (so a later message from the same chat resolves to the same
+   * identity rather than silently starting a fresh one). */
+  async deleteHistory(channelIdentityId: string): Promise<void> {
+    await db.delete(conversationMessages).where(eq(conversationMessages.channelIdentityId, channelIdentityId));
+  }
+
   /** The reverse of getOrCreateIdentity — given an id, which (channel,
    * externalId) does it belong to. Used to route a proactive, out-of-band
    * message (e.g. the OAuth callback's "you're connected" notification) back

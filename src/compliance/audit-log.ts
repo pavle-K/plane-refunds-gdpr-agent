@@ -1,6 +1,12 @@
 import { AuditRepo } from "../db/repositories/audit.repo.js";
 
-export type AuditEntryType = "llm_output" | "human_decision" | "system_action" | "mailbox_reassigned";
+export type AuditEntryType =
+  | "llm_output"
+  | "human_decision"
+  | "system_action"
+  | "mailbox_reassigned"
+  | "email_disconnected"
+  | "data_erasure";
 
 export interface AuditEntry {
   /** Omit for entries that aren't about a claim — e.g. "mailbox_reassigned". */
