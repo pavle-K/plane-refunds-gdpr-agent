@@ -10,7 +10,7 @@ interface GeminiPart {
 }
 
 interface GeminiContent {
-  role: "user" | "model" | "function";
+  role: "user" | "model";
   parts: GeminiPart[];
 }
 
@@ -21,10 +21,9 @@ interface GeminiGenerateContentResponse {
 /**
  * Talks to the Gemini API directly over REST rather than adding the @google/genai
  * SDK as a dependency — consistent with how outlook.adapter.ts talks to Microsoft
- * Graph in this codebase. Unverified against a live call — no GOOGLE_API_KEY
- * configured yet; confirm once one is available, especially the function-calling
- * turn structure below (role: "function" for tool results), which is the most
- * likely spot to have drifted from current docs.
+ * Graph in this codebase. Tool results are sent back as role "user" (not a
+ * separate "function" role — Gemini has no such role; confirmed against a live
+ * 400 response listing the actual valid roles, which don't include it).
  */
 export class GoogleLlmClient implements LlmClient {
   constructor(
@@ -111,7 +110,7 @@ export class GoogleLlmClient implements LlmClient {
         const resultText = await onToolCall({ name: call.name, input: call.args });
         responseParts.push({ functionResponse: { name: call.name, response: { result: resultText } } });
       }
-      contents.push({ role: "function", parts: responseParts });
+      contents.push({ role: "user", parts: responseParts });
     }
 
     throw new Error(`LLM tool loop did not converge within ${maxIterations} iterations`);
