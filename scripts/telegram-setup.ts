@@ -10,6 +10,7 @@
  *        npm run telegram:setup -- --url https://your-domain.com
  */
 import { env } from "../src/config/env.js";
+import { detectNgrokUrl } from "./lib/ngrok.js";
 
 function getArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -28,30 +29,6 @@ async function callTelegram<T>(token: string, method: string, body?: Record<stri
     ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
   });
   return (await response.json()) as TelegramApiResponse<T>;
-}
-
-interface NgrokTunnel {
-  public_url: string;
-  proto: string;
-  config: { addr: string };
-}
-
-/** Queries ngrok's own local API (http://127.0.0.1:4040) for a tunnel pointed
- * at our port — this is what lets this script skip the "copy the ngrok URL"
- * step entirely when testing locally. Returns null if ngrok isn't running or
- * has no matching tunnel; doesn't throw, since "not running" is expected. */
-async function detectNgrokUrl(port: number): Promise<string | null> {
-  try {
-    const response = await fetch("http://127.0.0.1:4040/api/tunnels");
-    if (!response.ok) {
-      return null;
-    }
-    const body = (await response.json()) as { tunnels: NgrokTunnel[] };
-    const match = body.tunnels.find((t) => t.proto === "https" && t.config.addr.endsWith(`:${port}`));
-    return match?.public_url ?? null;
-  } catch {
-    return null;
-  }
 }
 
 async function main() {

@@ -28,6 +28,15 @@ async function main() {
   await setupCheckpointer();
 
   const app = express();
+  // This process is always reached through exactly one reverse proxy in every
+  // real deployment shape this project supports — ngrok in dev (see
+  // scripts/dev-telegram.ts), a load balancer/reverse proxy in production —
+  // never exposed directly to the internet. "1" tells Express to trust the
+  // X-Forwarded-For entry added by that one hop (and no further back) when
+  // determining the client IP, which is what the rate limiter keys on.
+  // Without this, Express rejects any request carrying an X-Forwarded-For
+  // header at all — exactly what a reverse proxy always adds.
+  app.set("trust proxy", 1);
   app.use(express.json());
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
