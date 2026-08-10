@@ -1,7 +1,27 @@
-import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams } from "../llm.port.js";
+import { LlmRateLimitedError, type LlmClient, type LlmCompleteParams, type LlmCompleteWithToolsParams } from "../llm.port.js";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+interface GeminiErrorBody {
+  error?: {
+    message?: string;
+    details?: Array<{ "@type"?: string; retryDelay?: string }>;
+  };
+}
+
+/** Gemini's RetryInfo detail carries a duration like "37.552280594s" —
+ * protobuf's Duration text format, not a plain number. Returns undefined
+ * rather than throwing if the shape doesn't match; a missing retry hint just
+ * means LlmRateLimitedError.retryAfterSeconds stays undefined. */
+function parseGeminiRetryDelaySeconds(body: GeminiErrorBody): number | undefined {
+  const retryDelay = body.error?.details?.find((d) => d.retryDelay)?.retryDelay;
+  if (!retryDelay) {
+    return undefined;
+  }
+  const seconds = Number.parseFloat(retryDelay.replace(/s$/, ""));
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
 
 interface GeminiPart {
   text?: string;
@@ -40,7 +60,17 @@ export class GoogleLlmClient implements LlmClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Gemini API returned ${response.status}: ${await response.text()}`);
+      const rawText = await response.text();
+      if (response.status === 429) {
+        let retryAfterSeconds: number | undefined;
+        try {
+          retryAfterSeconds = parseGeminiRetryDelaySeconds(JSON.parse(rawText) as GeminiErrorBody);
+        } catch {
+          // Malformed/non-JSON error body — still a rate limit, just without a retry hint.
+        }
+        throw new LlmRateLimitedError("Gemini", retryAfterSeconds, rawText);
+      }
+      throw new Error(`Gemini API returned ${response.status}: ${rawText}`);
     }
 
     const data = (await response.json()) as GeminiGenerateContentResponse;

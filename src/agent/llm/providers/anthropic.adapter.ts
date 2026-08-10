@@ -1,7 +1,23 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams } from "../llm.port.js";
+import { LlmRateLimitedError, type LlmClient, type LlmCompleteParams, type LlmCompleteWithToolsParams } from "../llm.port.js";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
+
+/** Rethrows a 429 from the Anthropic SDK as the shared LlmRateLimitedError,
+ * parsing its standard Retry-After header when present; anything else passes
+ * through unchanged. */
+function rethrowIfRateLimited(cause: unknown): never {
+  if (cause instanceof Anthropic.APIError && cause.status === 429) {
+    const retryAfterHeader = cause.headers?.get?.("retry-after");
+    const retryAfterSeconds = retryAfterHeader ? Number.parseFloat(retryAfterHeader) : undefined;
+    throw new LlmRateLimitedError(
+      "Anthropic",
+      retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
+      cause.message,
+    );
+  }
+  throw cause;
+}
 
 /** Thin wrapper around the Anthropic SDK — unverified against a live call (no
  * ANTHROPIC_API_KEY set yet). The shape of the SDK call itself is standard and
@@ -17,12 +33,14 @@ export class AnthropicLlmClient implements LlmClient {
   }
 
   async complete({ system, prompt, maxTokens = 2048 }: LlmCompleteParams): Promise<string> {
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const response = await this.client.messages
+      .create({
+        model: this.model,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: "user", content: prompt }],
+      })
+      .catch(rethrowIfRateLimited);
 
     const textBlock = response.content.find((block) => block.type === "text");
     if (!textBlock || textBlock.type !== "text") {
@@ -51,13 +69,15 @@ export class AnthropicLlmClient implements LlmClient {
     }));
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: maxTokens,
-        system,
-        tools: anthropicTools,
-        messages,
-      });
+      const response = await this.client.messages
+        .create({
+          model: this.model,
+          max_tokens: maxTokens,
+          system,
+          tools: anthropicTools,
+          messages,
+        })
+        .catch(rethrowIfRateLimited);
       messages.push({ role: "assistant", content: response.content });
 
       const toolUseBlocks = response.content.filter(

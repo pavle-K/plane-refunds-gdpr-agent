@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import type { LlmClient } from "../../../agent/llm/llm.port.js";
+import { LlmRateLimitedError, type LlmClient } from "../../../agent/llm/llm.port.js";
 import type { ChannelAdapter, InboundMessage } from "../../../channels/channel.port.js";
 import { createTelegramAdapter, parseTelegramUpdate } from "../../../channels/telegram/index.js";
 import { handleTurn } from "../../../operator/session.js";
@@ -49,8 +49,20 @@ async function replyToTelegramMessage(llm: LlmClient, adapter: ChannelAdapter, i
     }
   } catch (cause) {
     console.error(`Unhandled error processing Telegram message from ${inbound.externalUserId}:`, cause);
-    await adapter
-      .sendMessage(inbound.externalUserId, "Sorry, something went wrong on my end — please try again.")
-      .catch(() => {});
+    await adapter.sendMessage(inbound.externalUserId, describeUserFacingError(cause)).catch(() => {});
   }
+}
+
+/** A generic "something went wrong" is right for a truly unexpected error,
+ * but a rate limit isn't unexpected or unusual enough to hide — the user can
+ * actually act on "try again in a bit" in a way they can't act on a vague
+ * failure message. Exported for direct unit testing — it's a pure function,
+ * no need to exercise it only through the full webhook route. */
+export function describeUserFacingError(cause: unknown): string {
+  if (cause instanceof LlmRateLimitedError) {
+    return cause.retryAfterSeconds !== undefined
+      ? `I'm temporarily rate-limited by the AI provider — please try again in about ${Math.ceil(cause.retryAfterSeconds)}s.`
+      : "I'm temporarily rate-limited by the AI provider — please try again shortly.";
+  }
+  return "Sorry, something went wrong on my end — please try again.";
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { GoogleLlmClient } from "../../../../../src/agent/llm/providers/google.adapter.js";
+import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
 
 function mockFetchOnce(body: unknown, status = 200) {
   const fn = vi.fn().mockResolvedValue({
@@ -53,6 +54,36 @@ describe("GoogleLlmClient", () => {
       const client = new GoogleLlmClient("key", "gemini-3-pro");
 
       await expect(client.complete({ system: "s", prompt: "p" })).rejects.toThrow(/no text part/);
+    });
+
+    it("throws LlmRateLimitedError with the parsed retry delay on a 429", async () => {
+      mockFetchOnce(
+        {
+          error: {
+            code: 429,
+            message: "quota exceeded",
+            details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "37.552280594s" }],
+          },
+        },
+        429,
+      );
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.provider).toBe("Gemini");
+      expect(error.retryAfterSeconds).toBeCloseTo(37.55, 1);
+    });
+
+    it("throws LlmRateLimitedError with no retry hint when the body doesn't include one", async () => {
+      mockFetchOnce({ error: { code: 429, message: "quota exceeded" } }, 429);
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.retryAfterSeconds).toBeUndefined();
     });
   });
 

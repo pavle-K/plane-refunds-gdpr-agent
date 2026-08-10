@@ -17,11 +17,31 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import express, { type Express } from "express";
 import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
-import { createTelegramWebhookRouter } from "../../../../../src/api/routes/channels/telegram.routes.js";
+import { createTelegramWebhookRouter, describeUserFacingError } from "../../../../../src/api/routes/channels/telegram.routes.js";
 import { FakeLlmClient } from "../../../../../src/agent/llm/fake.adapter.js";
+import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
 import { env } from "../../../../../src/config/env.js";
 
 const canRun = Boolean(env.TELEGRAM_WEBHOOK_SECRET);
+
+describe("describeUserFacingError", () => {
+  it("gives an actionable, specific message with a retry hint for a rate limit", () => {
+    const message = describeUserFacingError(new LlmRateLimitedError("Gemini", 37.5, "quota exceeded"));
+    expect(message).toContain("rate-limited");
+    expect(message).toContain("38s"); // Math.ceil(37.5)
+  });
+
+  it("gives an actionable message without a specific delay when none was provided", () => {
+    const message = describeUserFacingError(new LlmRateLimitedError("Gemini", undefined, "quota exceeded"));
+    expect(message).toContain("rate-limited");
+    expect(message).not.toContain("undefined");
+  });
+
+  it("falls back to a generic message for any other error", () => {
+    const message = describeUserFacingError(new Error("boom"));
+    expect(message).toBe("Sorry, something went wrong on my end — please try again.");
+  });
+});
 
 describe.skipIf(!canRun)("POST /webhooks/telegram — secret enforcement", () => {
   let app: Express;

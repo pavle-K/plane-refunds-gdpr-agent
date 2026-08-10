@@ -1,4 +1,4 @@
-import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams } from "../llm.port.js";
+import { LlmRateLimitedError, type LlmClient, type LlmCompleteParams, type LlmCompleteWithToolsParams } from "../llm.port.js";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 
@@ -54,7 +54,17 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI-compatible endpoint (${url}) returned ${response.status}: ${await response.text()}`);
+      const rawText = await response.text();
+      if (response.status === 429) {
+        const retryAfterHeader = response.headers.get("retry-after");
+        const retryAfterSeconds = retryAfterHeader ? Number.parseFloat(retryAfterHeader) : undefined;
+        throw new LlmRateLimitedError(
+          this.config.baseUrl,
+          Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
+          rawText,
+        );
+      }
+      throw new Error(`OpenAI-compatible endpoint (${url}) returned ${response.status}: ${rawText}`);
     }
 
     const data = (await response.json()) as OpenAiChatCompletionResponse;

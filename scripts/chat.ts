@@ -17,6 +17,7 @@
 import { createInterface } from "node:readline/promises";
 import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js";
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
+import { LlmRateLimitedError } from "../src/agent/llm/llm.port.js";
 import { handleTurn } from "../src/operator/session.js";
 import { env } from "../src/config/env.js";
 
@@ -47,13 +48,27 @@ async function main() {
       break;
     }
 
-    const responseText = await handleTurn(llm, {
-      channel: "cli",
-      externalId: CLI_EXTERNAL_ID,
-      text: userInput,
-      onToolCall: (call) => console.log(`  [${call.name}(${JSON.stringify(call.input)})]`),
-    });
-    console.log(`\nagent> ${responseText}\n`);
+    // A failed turn (e.g. a rate-limited LLM call) shouldn't kill the whole
+    // session — same reasoning as the Telegram route's per-message catch.
+    try {
+      const responseText = await handleTurn(llm, {
+        channel: "cli",
+        externalId: CLI_EXTERNAL_ID,
+        text: userInput,
+        onToolCall: (call) => console.log(`  [${call.name}(${JSON.stringify(call.input)})]`),
+      });
+      console.log(`\nagent> ${responseText}\n`);
+    } catch (cause) {
+      if (cause instanceof LlmRateLimitedError) {
+        console.log(
+          `\n[rate-limited by ${cause.provider}` +
+            (cause.retryAfterSeconds !== undefined ? ` — retry in ~${Math.ceil(cause.retryAfterSeconds)}s` : "") +
+            `]\n`,
+        );
+      } else {
+        console.error("\n[turn failed]", cause, "\n");
+      }
+    }
   }
 
   rl.close();
