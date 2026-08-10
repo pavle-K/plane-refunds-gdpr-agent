@@ -8,6 +8,21 @@ interface TelegramApiResponse {
 }
 
 /**
+ * Defense-in-depth against Markdown-formatted links, e.g. `[label](url)` —
+ * prompt.md tells the LLM to always give a bare URL instead (see its "Links"
+ * rule) precisely because this send call has no parse_mode set, so Telegram
+ * displays Markdown syntax as broken literal text rather than a clickable
+ * link. That's a prompt instruction, not a guarantee — a model can still slip
+ * and wrap a link anyway, and for something like an OAuth authorization URL
+ * that's not a cosmetic issue, it makes the link fail outright. This strips
+ * the wrapper and keeps just the URL, regardless of whether the model
+ * followed the instruction.
+ */
+function stripMarkdownLinks(text: string): string {
+  return text.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, "$2");
+}
+
+/**
  * Real adapter against Telegram's Bot API. No SDK dependency — the Bot API is a
  * plain JSON/HTTPS API, same convention as google.adapter.ts and
  * postmark.adapter.ts. externalUserId here is Telegram's numeric chat id
@@ -22,7 +37,7 @@ export class TelegramAdapter implements ChannelAdapter {
       response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: externalUserId, text }),
+        body: JSON.stringify({ chat_id: externalUserId, text: stripMarkdownLinks(text) }),
       });
     } catch (cause) {
       return err({ type: "upstream_error", message: `Network error calling Telegram: ${String(cause)}` });

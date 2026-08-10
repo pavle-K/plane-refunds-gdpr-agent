@@ -24,7 +24,8 @@
     "email:check": "tsx scripts/check-inbox.ts",
     "chat": "tsx scripts/chat.ts",
     "server": "tsx src/api/server.ts",
-    "telegram:setup": "tsx scripts/telegram-setup.ts"
+    "telegram:setup": "tsx scripts/telegram-setup.ts",
+    "dev:telegram": "tsx scripts/dev-telegram.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -33,6 +34,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
     "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "zod": "^4.4.3"

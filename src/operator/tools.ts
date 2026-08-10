@@ -2,23 +2,50 @@ import { Command } from "@langchain/langgraph";
 import type { LlmToolDefinition } from "../agent/llm/index.js";
 import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
-import { runAuthorizationCodeFlow } from "../providers/email-ingest/oauth-flow.js";
+import { getCheckpointer } from "../agent/checkpointer.js";
+import { buildHostedAuthorizationUrl } from "../providers/email-ingest/hosted-oauth.js";
 import { EMAIL_OAUTH_PROVIDERS } from "../providers/email-ingest/oauth-providers.js";
-import { REDIRECT_URI } from "../providers/email-ingest/oauth-redirect-uri.js";
-import { EmailConnectionRepo } from "../db/repositories/email-connection.repo.js";
+import { EmailConnectionRepo, type EmailProviderName } from "../db/repositories/email-connection.repo.js";
+import { ClaimRepo } from "../db/repositories/claim.repo.js";
+import { ConversationRepo } from "../db/repositories/conversation.repo.js";
+import { ConsentRepo } from "../db/repositories/consent.repo.js";
+import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repositories/pending-confirmation.repo.js";
+import { DbAuditLog } from "../compliance/audit-log.js";
 import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
-import { env } from "../config/env.js";
 import type { Booking } from "../domain/claim/claim.types.js";
+
+/** Claim statuses that mean nothing was ever actually sent to an airline —
+ * safe to fully delete on a forget_my_data request. Everything else (sent
+ * and beyond) is a real transaction/correspondence, kept for the legal-claims
+ * and financial record-keeping reasons GDPR Art. 17(3) allows for. */
+const PRE_SEND_CLAIM_STATUSES = new Set(["draft", "pending_approval", "declined"]);
+
+/** How long a forget_my_data/disconnect_email confirmation request stays
+ * live — short on purpose: this only ever needs to survive to the very next
+ * message, and a short window limits how long a stray later "yes" (said for
+ * an unrelated reason) could theoretically land inside it. */
+const PENDING_CONFIRMATION_TTL_MINUTES = 5;
+
+/** Thrown by resolveThreadId when a threadId doesn't exist or belongs to a
+ * different user. Deliberately worded the same either way — this is an
+ * internal chat tool, not a public API, but there's still no reason to
+ * confirm to a caller that a *different* user's claim thread exists. */
+export class ClaimAuthorizationError extends Error {
+  constructor(threadId: string) {
+    super(`No claim thread "${threadId}" found for this user.`);
+    this.name = "ClaimAuthorizationError";
+  }
+}
 
 export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "connect_email",
     description:
-      "Authorizes read-only access to the user's Gmail or Outlook inbox. This opens a browser window for the " +
-      "user to log in and approve access — tell them to check their browser before calling this. Only call when " +
-      "the user has explicitly asked to connect an email account.",
+      "Returns a link that authorizes read-only access to the user's Gmail or Outlook inbox. Does NOT wait for " +
+      "them to complete it — send them the link and stop there; you'll be told separately, in a later message, " +
+      "once it's actually connected. Only call when the user has explicitly asked to connect an email account.",
     inputSchema: {
       type: "object",
       properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
@@ -142,23 +169,91 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
       required: ["receivedAmountCents", "connectedAccountId"],
     },
   },
+  {
+    name: "disconnect_email",
+    description:
+      "Requests disconnecting the user's Gmail or Outlook inbox. Does NOT disconnect it immediately — this only " +
+      "starts a confirmation the system itself handles on the user's next message; it returns a confirmationPrompt " +
+      "you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not tell the user it's " +
+      "done, and do not call this tool again to 'confirm' — you have no way to confirm it yourself, only the " +
+      "user's own next reply does that. Only call when the user explicitly asks to disconnect or remove access " +
+      "to an email account.",
+    inputSchema: {
+      type: "object",
+      properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
+      required: ["provider"],
+    },
+  },
+  {
+    name: "forget_my_data",
+    description:
+      "Requests deleting the user's data held by this bot. Does NOT delete anything immediately — this only " +
+      "starts a confirmation the system itself handles on the user's next message; it returns a " +
+      "confirmationPrompt you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not " +
+      "tell the user their data is deleted, and do not call this tool again to 'confirm' — you have no way to " +
+      "confirm it yourself, only the user's own next reply does that. Only call when the user has explicitly and " +
+      "unambiguously asked to delete/forget their data — never speculatively, and never from an ambiguous or " +
+      "joking remark.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 export class OperatorTools {
   private readonly deps = createRealGraphDeps();
   private readonly graph = buildGraph(this.deps);
-  private lastThreadId: string | null = null;
+  private readonly claimRepo = new ClaimRepo();
 
-  private resolveThreadId(threadId?: string): string {
-    const id = threadId ?? this.lastThreadId;
-    if (!id) {
-      throw new Error("No claim thread specified and none started yet this session.");
+  /** The user this instance acts on behalf of — every email-connection lookup
+   * and claim-ownership check is scoped to this id. channelIdentityId is the
+   * specific chat connect_email was called from, recorded on the pending
+   * OAuth flow so the callback route knows where to send the "you're
+   * connected" confirmation.
+   *
+   * Deliberately no per-conversation in-memory state on this class (see the
+   * removed lastThreadId) — a fresh instance is constructed per turn
+   * (src/operator/session.ts), so any request can land on any horizontally
+   * scaled process and still work: "the most recently touched claim"
+   * (resolveThreadId below) is a DB query, not instance memory. */
+  constructor(
+    private readonly userId: string,
+    private readonly channelIdentityId: string,
+  ) {}
+
+  /** Resolves an explicit threadId (verifying the calling user owns it) or,
+   * if omitted, looks up the claim this user most recently touched —
+   * inherently already scoped to this.userId, so no separate ownership check
+   * is needed on that path. Either way, every caller of this method is about
+   * to read or act on a LangGraph thread, and none of that should happen
+   * without this. */
+  private async resolveThreadId(threadId?: string): Promise<string> {
+    if (threadId) {
+      const claim = await this.claimRepo.findById(threadId);
+      if (!claim || claim.userId !== this.userId) {
+        throw new ClaimAuthorizationError(threadId);
+      }
+      return threadId;
     }
-    return id;
+
+    const mostRecent = await this.claimRepo.findMostRecentForUser(this.userId);
+    if (!mostRecent) {
+      throw new Error("No claim thread specified and none started yet.");
+    }
+    return mostRecent.id;
   }
 
   private config(threadId: string) {
     return { configurable: { thread_id: threadId } };
+  }
+
+  /** Keeps the claims ownership+status mirror (schema.ts's `claims` table)
+   * current after every action that can move a claim forward — both so
+   * get_claim_status-adjacent tooling reflects reality, and so
+   * ClaimRepo.findMostRecentForUser (resolveThreadId's fallback when no
+   * threadId is given) reflects the claim the user actually last acted on,
+   * not just the one they started. */
+  private async updateClaimStatusMirror(threadId: string, result: Record<string, unknown>): Promise<void> {
+    const status = typeof result["claimStatus"] === "string" ? result["claimStatus"] : "unknown";
+    await this.claimRepo.updateStatus(threadId, status);
   }
 
   async dispatch(name: string, input: Record<string, unknown>): Promise<unknown> {
@@ -179,49 +274,240 @@ export class OperatorTools {
         return this.submitAirlineReply(input["threadId"] as string | undefined, input["replyText"] as string | undefined);
       case "submit_payment_confirmation":
         return this.submitPaymentConfirmation(input as unknown as PaymentInput);
+      case "disconnect_email":
+        return this.requestDisconnectEmail(input["provider"] as EmailProviderName);
+      case "forget_my_data":
+        return this.requestForgetMyData();
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
   }
 
+  /**
+   * Executes a confirmed forget_my_data/disconnect_email request — called
+   * ONLY from src/operator/session.ts's deterministic pending-confirmation
+   * handling, never from dispatch() and never reachable by the LLM. This is
+   * the one and only path that actually deletes/disconnects anything; an LLM
+   * calling disconnect_email or forget_my_data can never reach it directly,
+   * no matter what it generates or claims.
+   */
+  async executeConfirmedAction(actionType: ConfirmableActionType, actionParams: Record<string, unknown>): Promise<unknown> {
+    switch (actionType) {
+      case "forget_my_data":
+        return this.forgetMyData();
+      case "disconnect_email":
+        return this.disconnectEmail(actionParams["provider"] as EmailProviderName);
+      default:
+        throw new Error(`Unknown confirmable action type: ${String(actionType)}`);
+    }
+  }
+
+  /** Returns a link immediately — does not block waiting for the user to
+   * complete it. The public callback route (src/api/routes/oauth.routes.ts)
+   * finishes the flow out-of-band and sends a proactive "connected" message
+   * back to this same chat once it does. */
   private async connectEmail(provider: "gmail" | "outlook") {
-    if (!env.TOKEN_ENCRYPTION_KEY) {
-      return { error: "TOKEN_ENCRYPTION_KEY is not set in .env — cannot store tokens." };
-    }
-    const clientId = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_ID : env.OUTLOOK_OAUTH_CLIENT_ID;
-    const clientSecret = provider === "gmail" ? env.GMAIL_OAUTH_CLIENT_SECRET : env.OUTLOOK_OAUTH_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      return { error: `${provider.toUpperCase()}_OAUTH_CLIENT_ID/_SECRET not set in .env.` };
-    }
-
-    const setup = EMAIL_OAUTH_PROVIDERS[provider];
-    const config = setup.buildConfig(clientId, clientSecret, REDIRECT_URI);
-    const tokens = await runAuthorizationCodeFlow(config);
-    const emailAddress = await setup.fetchEmailAddress(tokens.accessToken);
-
-    const repo = new EmailConnectionRepo();
-    await repo.upsert({
+    const { authorizationUrl, expiresInMinutes } = await buildHostedAuthorizationUrl(
+      this.userId,
+      this.channelIdentityId,
       provider,
-      emailAddress,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      accessTokenExpiresAtUtc: tokens.expiresAtUtc,
-    });
-
-    return { connected: true, provider, emailAddress };
+    );
+    return { authorizationUrl, expiresInMinutes };
   }
 
   private async getEmailConnectionStatus() {
     const repo = new EmailConnectionRepo();
-    const [gmail, outlook] = await Promise.all([repo.findByProvider("gmail"), repo.findByProvider("outlook")]);
+    const [gmail, outlook] = await Promise.all([
+      repo.findByUserAndProvider(this.userId, "gmail"),
+      repo.findByUserAndProvider(this.userId, "outlook"),
+    ]);
     return {
       gmail: gmail ? { connected: true, emailAddress: gmail.emailAddress } : { connected: false },
       outlook: outlook ? { connected: true, emailAddress: outlook.emailAddress } : { connected: false },
     };
   }
 
+  /** Starts (does not execute) a disconnect_email confirmation — see
+   * schema.ts's pending_confirmations doc comment for why execution is
+   * deliberately not reachable from here. */
+  private async requestDisconnectEmail(provider: EmailProviderName) {
+    const connection = await new EmailConnectionRepo().findByUserAndProvider(this.userId, provider);
+    if (!connection) {
+      return { status: "not_connected" as const };
+    }
+
+    await new PendingConfirmationRepo().create({
+      userId: this.userId,
+      channelIdentityId: this.channelIdentityId,
+      actionType: "disconnect_email",
+      actionParams: { provider },
+      expiresAtUtc: new Date(Date.now() + PENDING_CONFIRMATION_TTL_MINUTES * 60_000),
+    });
+
+    return {
+      status: "confirmation_required" as const,
+      confirmationPrompt:
+        `This will disconnect ${connection.emailAddress} (${provider}) and revoke authorization with the ` +
+        `provider where possible. Reply "yes" to confirm, or anything else to cancel.`,
+    };
+  }
+
+  /** Starts (does not execute) a forget_my_data confirmation, having already
+   * looked up exactly what would be deleted vs. kept so the confirmation
+   * prompt is accurate — see schema.ts's pending_confirmations doc comment
+   * for why execution is deliberately not reachable from here. */
+  private async requestForgetMyData() {
+    const emailRepo = new EmailConnectionRepo();
+    const connectedEmails: string[] = [];
+    for (const provider of ["gmail", "outlook"] as const) {
+      const connection = await emailRepo.findByUserAndProvider(this.userId, provider);
+      if (connection) {
+        connectedEmails.push(connection.emailAddress);
+      }
+    }
+
+    const allClaims = await this.claimRepo.findAllForUser(this.userId);
+    const deletableClaimCount = allClaims.filter((c) => PRE_SEND_CLAIM_STATUSES.has(c.status)).length;
+    const keptClaimCount = allClaims.length - deletableClaimCount;
+
+    const willDelete = ["your chat history", "your consent record"];
+    if (connectedEmails.length > 0) {
+      willDelete.push(`your connected email (${connectedEmails.join(", ")})`);
+    }
+    if (deletableClaimCount > 0) {
+      willDelete.push(`${deletableClaimCount} claim(s) never sent to an airline`);
+    }
+
+    let prompt = `This will permanently delete: ${willDelete.join(", ")}. This cannot be undone.`;
+    if (keptClaimCount > 0) {
+      prompt +=
+        ` ${keptClaimCount} claim(s) that were actually sent (or paid out) will be kept, along with the audit ` +
+        `log, for legal/financial record-keeping required by law.`;
+    }
+    prompt += ` Reply "yes" to confirm, or anything else to cancel.`;
+
+    await new PendingConfirmationRepo().create({
+      userId: this.userId,
+      channelIdentityId: this.channelIdentityId,
+      actionType: "forget_my_data",
+      actionParams: {},
+      expiresAtUtc: new Date(Date.now() + PENDING_CONFIRMATION_TTL_MINUTES * 60_000),
+    });
+
+    return { status: "confirmation_required" as const, confirmationPrompt: prompt };
+  }
+
+  /** Revokes with the provider where supported (Gmail; not Outlook — see
+   * oauth-providers.ts) and deletes the local connection regardless of
+   * whether revocation succeeded — a token we can't invalidate is still a
+   * token we shouldn't keep holding onto. Only reachable via
+   * executeConfirmedAction — see that method's doc comment. */
+  private async disconnectEmail(provider: EmailProviderName) {
+    const repo = new EmailConnectionRepo();
+    const connection = await repo.findByUserAndProvider(this.userId, provider);
+    if (!connection) {
+      return { disconnected: false, reason: "not_connected" as const };
+    }
+
+    const setup = EMAIL_OAUTH_PROVIDERS[provider];
+    const revokedWithProvider = setup.revokeToken ? await setup.revokeToken(connection.refreshToken).catch(() => false) : false;
+
+    await repo.delete(this.userId, provider);
+    await new DbAuditLog().record({
+      userId: this.userId,
+      entryType: "email_disconnected",
+      payload: { provider, emailAddress: connection.emailAddress, revokedWithProvider },
+    });
+
+    return {
+      disconnected: true,
+      provider,
+      emailAddress: connection.emailAddress,
+      revokedWithProvider,
+      ...(revokedWithProvider
+        ? {}
+        : {
+            note:
+              `Could not automatically revoke this with ${provider === "gmail" ? "Google" : "Microsoft"} — the ` +
+              "stored connection is removed on our end, but tell the user they can also revoke it themselves via " +
+              "their account's security settings for full assurance.",
+          }),
+    };
+  }
+
+  /**
+   * Deletes everything that has no legal reason to be retained (email
+   * connection, chat history, consent record, any claim never actually sent
+   * to an airline) and keeps everything that does (a claim that WAS sent or
+   * paid out, and the audit log) — see GDPR Art. 17(3)'s legal-claims and
+   * legal-obligation exceptions to the right to erasure. Reports exactly
+   * what was kept and why so the caller can relay that plainly rather than
+   * silently keeping data the user asked to have deleted. Only reachable via
+   * executeConfirmedAction — see that method's doc comment.
+   */
+  private async forgetMyData() {
+    const emailRepo = new EmailConnectionRepo();
+    const disconnectedEmails: { provider: EmailProviderName; emailAddress: string; revokedWithProvider: boolean }[] = [];
+    for (const provider of ["gmail", "outlook"] as const) {
+      const connection = await emailRepo.findByUserAndProvider(this.userId, provider);
+      if (!connection) {
+        continue;
+      }
+      const setup = EMAIL_OAUTH_PROVIDERS[provider];
+      const revokedWithProvider = setup.revokeToken
+        ? await setup.revokeToken(connection.refreshToken).catch(() => false)
+        : false;
+      await emailRepo.delete(this.userId, provider);
+      disconnectedEmails.push({ provider, emailAddress: connection.emailAddress, revokedWithProvider });
+    }
+
+    const checkpointer = getCheckpointer();
+    const allClaims = await this.claimRepo.findAllForUser(this.userId);
+    const deletedClaimIds: string[] = [];
+    const keptClaimIds: string[] = [];
+    for (const claim of allClaims) {
+      if (PRE_SEND_CLAIM_STATUSES.has(claim.status)) {
+        // Deletes the raw booking/passenger PII in the LangGraph checkpointer,
+        // not just this app's own ownership/status mirror row — the claims
+        // table was never the full record (see schema.ts).
+        await checkpointer.deleteThread(claim.id);
+        await this.claimRepo.delete(claim.id);
+        deletedClaimIds.push(claim.id);
+      } else {
+        keptClaimIds.push(claim.id);
+      }
+    }
+
+    await new ConversationRepo().deleteHistory(this.channelIdentityId);
+    await new ConsentRepo().deleteForUser(this.userId);
+
+    await new DbAuditLog().record({
+      userId: this.userId,
+      entryType: "data_erasure",
+      payload: { disconnectedEmails, deletedClaimIds, keptClaimIds },
+    });
+
+    return {
+      erased: true,
+      disconnectedEmails,
+      deletedClaimCount: deletedClaimIds.length,
+      keptClaims:
+        keptClaimIds.length > 0
+          ? {
+              count: keptClaimIds.length,
+              reason:
+                "These claims were actually sent to an airline (or paid out) — kept for legal/financial " +
+                "record-keeping required by law, not because the request wasn't honored.",
+            }
+          : null,
+      note:
+        "Chat history and the consent record are deleted. The audit log (proof the human-approval gate was " +
+        "followed for any sent claim) is kept for the same legal reasons as sent claims.",
+    };
+  }
+
   private async scanInbox(input: ScanInboxInput) {
-    const provider = await createEmailIngestProvider();
+    const provider = await createEmailIngestProvider(this.userId);
     if (provider.constructor.name === "FakeEmailIngestAdapter") {
       return { error: "No inbox connected — call connect_email first." };
     }
@@ -268,7 +554,12 @@ export class OperatorTools {
     }
 
     const threadId = `claim-${Date.now()}`;
-    this.lastThreadId = threadId;
+    // Recorded before graph.invoke, not after — if invoke fails partway, an
+    // orphan ownership row pointing at a thread that never actually started
+    // is harmless; the reverse (a thread that exists in the checkpointer with
+    // no ownership row) would permanently lock its own creator out of it via
+    // resolveThreadId's ownership check.
+    await this.claimRepo.create(threadId, this.userId, "draft");
 
     const booking: Booking = {
       bookingReference: input.bookingReference ?? `CHAT-${Date.now()}`,
@@ -290,13 +581,13 @@ export class OperatorTools {
       { claimId: threadId, claimStatus: "draft", booking },
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
 
     return { threadId, ...this.summarize(result) };
   }
 
   private async submitApprovalDecision(input: ApprovalInput) {
-    const threadId = this.resolveThreadId(input.threadId);
-    this.lastThreadId = threadId;
+    const threadId = await this.resolveThreadId(input.threadId);
 
     if (input.action === "edit" && !input.editedText) {
       return { error: "action 'edit' requires editedText with the full replacement letter." };
@@ -311,12 +602,13 @@ export class OperatorTools {
       new Command({ resume: decision }),
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
 
     return { threadId, ...this.summarize(result) };
   }
 
   private async getClaimStatus(threadId?: string) {
-    const id = this.resolveThreadId(threadId);
+    const id = await this.resolveThreadId(threadId);
     const state = await this.graph.getState(this.config(id));
     return {
       threadId: id,
@@ -329,25 +621,25 @@ export class OperatorTools {
   }
 
   private async submitAirlineReply(threadId: string | undefined, replyText: string | undefined) {
-    const id = this.resolveThreadId(threadId);
-    this.lastThreadId = id;
+    const id = await this.resolveThreadId(threadId);
 
     const resumeValue = replyText ? { type: "reply" as const, airlineReplyText: replyText } : { type: "timeout" as const };
     const result = (await this.graph.invoke(new Command({ resume: resumeValue }), this.config(id))) as Record<
       string,
       unknown
     >;
+    await this.updateClaimStatusMirror(id, result);
     return { threadId: id, ...this.summarize(result) };
   }
 
   private async submitPaymentConfirmation(input: PaymentInput) {
-    const threadId = this.resolveThreadId(input.threadId);
-    this.lastThreadId = threadId;
+    const threadId = await this.resolveThreadId(input.threadId);
 
     const result = (await this.graph.invoke(
       new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),
       this.config(threadId),
     )) as Record<string, unknown>;
+    await this.updateClaimStatusMirror(threadId, result);
     return { threadId, ...this.summarize(result) };
   }
 
@@ -363,6 +655,47 @@ export class OperatorTools {
       payout: result["payout"],
     };
   }
+}
+
+/**
+ * Turns the real result of executeConfirmedAction into the text actually
+ * sent to the user — generated by code from the tool's real return value,
+ * never by the LLM, so the confirmation message can't say anything the
+ * action didn't actually do. Called only from src/operator/session.ts's
+ * deterministic pending-confirmation handling.
+ */
+export function describeConfirmedActionResult(actionType: ConfirmableActionType, result: unknown): string {
+  if (actionType === "forget_my_data") {
+    const r = result as {
+      disconnectedEmails: { emailAddress: string }[];
+      deletedClaimCount: number;
+      keptClaims: { count: number; reason: string } | null;
+    };
+    const parts = ["Done — your data has been deleted."];
+    if (r.disconnectedEmails.length > 0) {
+      parts.push(`Disconnected: ${r.disconnectedEmails.map((e) => e.emailAddress).join(", ")}.`);
+    }
+    parts.push(
+      `Deleted ${r.deletedClaimCount} claim(s) never sent to an airline, your chat history, and your consent record.`,
+    );
+    if (r.keptClaims) {
+      parts.push(`Kept ${r.keptClaims.count} claim(s): ${r.keptClaims.reason}`);
+    }
+    return parts.join(" ");
+  }
+
+  if (actionType === "disconnect_email") {
+    const r = result as { disconnected: boolean; emailAddress?: string; revokedWithProvider?: boolean; note?: string };
+    if (!r.disconnected) {
+      return "There was nothing connected to disconnect.";
+    }
+    return (
+      `Disconnected ${r.emailAddress}.` +
+      (r.revokedWithProvider ? " Authorization was revoked with the provider." : ` ${r.note ?? ""}`)
+    );
+  }
+
+  return "Done.";
 }
 
 interface ScanInboxInput {

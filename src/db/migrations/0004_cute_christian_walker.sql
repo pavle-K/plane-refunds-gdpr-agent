@@ -1,0 +1,1 @@
+ALTER TABLE "audit_log" ALTER COLUMN "claim_id" DROP NOT NULL;

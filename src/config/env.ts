@@ -76,12 +76,43 @@ const envSchema = z.object({
 
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
+
+  // The public HTTPS origin this server is reachable at (e.g.
+  // https://claims.example.com) — used to build the hosted OAuth redirect URI
+  // (src/providers/email-ingest/oauth-redirect-uri.ts's getHostedRedirectUri).
+  // Optional at the schema level (see DATABASE_URL's comment for why); actually
+  // required to start a hosted OAuth flow, checked lazily at that point of use.
+  PUBLIC_URL: z.string().url().optional(),
+});
+
+/** Vars that are optional at the schema level (so unit tests and early-stage
+ * local dev can boot without them, per this file's existing convention) but
+ * fail closed rather than silently permissive once NODE_ENV=production:
+ * without TELEGRAM_WEBHOOK_SECRET the webhook route accepts unauthenticated
+ * requests, without PUBLIC_URL the hosted OAuth flow can't build a redirect
+ * URI, without TOKEN_ENCRYPTION_KEY connected mailboxes' tokens can't be
+ * stored — none of those should be discovered at request time in production. */
+const REQUIRED_IN_PRODUCTION = ["TELEGRAM_WEBHOOK_SECRET", "PUBLIC_URL", "TOKEN_ENCRYPTION_KEY"] as const;
+
+const envSchemaWithProductionChecks = envSchema.superRefine((data, ctx) => {
+  if (data.NODE_ENV !== "production") {
+    return;
+  }
+  for (const key of REQUIRED_IN_PRODUCTION) {
+    if (!data[key]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} must be set when NODE_ENV=production.`,
+      });
+    }
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
 
 function parseEnv(): Env {
-  const result = envSchema.safeParse(process.env);
+  const result = envSchemaWithProductionChecks.safeParse(process.env);
 
   if (!result.success) {
     console.error("Invalid environment configuration:");

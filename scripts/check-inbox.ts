@@ -13,6 +13,13 @@ import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-ext
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
 import { env } from "../src/config/env.js";
 import { pool, assertDatabaseConfigured } from "../src/db/client.js";
+import { ConversationRepo } from "../src/db/repositories/conversation.repo.js";
+import { UserRepo } from "../src/db/repositories/user.repo.js";
+
+// Same (channel, externalId) pair scripts/chat.ts and scripts/connect-email.ts
+// use for the CLI operator, so this resolves the same user's connection.
+const CLI_CHANNEL = "cli";
+const CLI_EXTERNAL_ID = "local";
 
 function getArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -29,7 +36,13 @@ async function main() {
   const sinceUtc = startArg ? `${startArg}T00:00:00.000Z` : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const untilUtc = endArg ? `${endArg}T23:59:59.999Z` : undefined;
 
-  const provider = await createEmailIngestProvider();
+  const channelIdentityId = await new ConversationRepo().getOrCreateIdentity(CLI_CHANNEL, CLI_EXTERNAL_ID);
+  const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
+  if (!userId) {
+    throw new Error(`Failed to resolve the local CLI user (channel identity ${channelIdentityId}).`);
+  }
+
+  const provider = await createEmailIngestProvider(userId);
   console.log(`Using: ${provider.constructor.name}`);
   if (provider.constructor.name === "FakeEmailIngestAdapter") {
     console.log("No real inbox connected — run `npm run email:connect -- gmail` (or outlook) first.");

@@ -22,6 +22,27 @@
       "when": 1786020765997,
       "tag": "0002_little_northstar",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786120980888,
+      "tag": "0003_ambiguous_echo",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786123507417,
+      "tag": "0004_cute_christian_walker",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786389961524,
+      "tag": "0005_exotic_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

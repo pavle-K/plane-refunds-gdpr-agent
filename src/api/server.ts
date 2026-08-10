@@ -12,6 +12,8 @@ import express from "express";
 import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
 import { createLlmClient, FakeLlmClient } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
+import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
+import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
 import { env } from "../config/env.js";
 
 async function main() {
@@ -26,10 +28,20 @@ async function main() {
   await setupCheckpointer();
 
   const app = express();
+  // This process is always reached through exactly one reverse proxy in every
+  // real deployment shape this project supports — ngrok in dev (see
+  // scripts/dev-telegram.ts), a load balancer/reverse proxy in production —
+  // never exposed directly to the internet. "1" tells Express to trust the
+  // X-Forwarded-For entry added by that one hop (and no further back) when
+  // determining the client IP, which is what the rate limiter keys on.
+  // Without this, Express rejects any request carrying an X-Forwarded-For
+  // header at all — exactly what a reverse proxy always adds.
+  app.set("trust proxy", 1);
   app.use(express.json());
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
-  app.use(createTelegramWebhookRouter(llm));
+  app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(llm));
+  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(llm));
 
   const server = app.listen(env.PORT, () => {
     console.log(`API listening on :${env.PORT} (LLM_PROVIDER=${env.LLM_PROVIDER})`);

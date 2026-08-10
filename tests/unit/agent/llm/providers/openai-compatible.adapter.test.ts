@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { OpenAiCompatibleLlmClient } from "../../../../../src/agent/llm/providers/openai-compatible.adapter.js";
+import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
 
 function mockFetchOnce(body: unknown, status = 200) {
   const fn = vi.fn().mockResolvedValue({
@@ -69,6 +70,38 @@ describe("OpenAiCompatibleLlmClient", () => {
       const client = new OpenAiCompatibleLlmClient({ baseUrl: "https://api.example.com/v1", apiKey: "key", model: "m" });
 
       await expect(client.complete({ system: "s", prompt: "p" })).rejects.toThrow(/no text content/);
+    });
+
+    it("throws LlmRateLimitedError with the Retry-After header value on a 429", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: { get: (name: string) => (name === "retry-after" ? "12" : null) },
+        text: () => Promise.resolve("rate limited"),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new OpenAiCompatibleLlmClient({ baseUrl: "https://api.example.com/v1", apiKey: "key", model: "m" });
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.retryAfterSeconds).toBe(12);
+    });
+
+    it("throws LlmRateLimitedError with no retry hint when there's no Retry-After header", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: { get: () => null },
+        text: () => Promise.resolve("rate limited"),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new OpenAiCompatibleLlmClient({ baseUrl: "https://api.example.com/v1", apiKey: "key", model: "m" });
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.retryAfterSeconds).toBeUndefined();
     });
   });
 

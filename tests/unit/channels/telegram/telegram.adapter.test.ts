@@ -29,6 +29,32 @@ describe("TelegramAdapter", () => {
     expect(JSON.parse(init.body as string)).toEqual({ chat_id: "42", text: "hello" });
   });
 
+  it("strips Markdown link syntax down to the bare URL before sending (no parse_mode is set, so it would otherwise show as broken literal text)", async () => {
+    const fetchMock = mockFetchOnce({ ok: true, result: {} });
+    const adapter = new TelegramAdapter("bot-token");
+
+    await adapter.sendMessage("42", "Click [here](https://example.com/oauth/gmail/callback?state=abc) to connect.");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "42",
+      text: "Click https://example.com/oauth/gmail/callback?state=abc to connect.",
+    });
+  });
+
+  it("leaves an already-bare URL and ordinary text untouched", async () => {
+    const fetchMock = mockFetchOnce({ ok: true, result: {} });
+    const adapter = new TelegramAdapter("bot-token");
+
+    await adapter.sendMessage("42", "Here you go: https://example.com/callback?a=1&b=2 — expires in 15 minutes.");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "42",
+      text: "Here you go: https://example.com/callback?a=1&b=2 — expires in 15 minutes.",
+    });
+  });
+
   it("maps a 401/403 to an auth_error", async () => {
     mockFetchOnce({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
     const adapter = new TelegramAdapter("bad-token");

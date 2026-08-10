@@ -15,9 +15,16 @@
 import { runAuthorizationCodeFlow } from "../src/providers/email-ingest/oauth-flow.js";
 import { EMAIL_OAUTH_PROVIDERS } from "../src/providers/email-ingest/oauth-providers.js";
 import { EmailConnectionRepo } from "../src/db/repositories/email-connection.repo.js";
+import { ConversationRepo } from "../src/db/repositories/conversation.repo.js";
+import { UserRepo } from "../src/db/repositories/user.repo.js";
 import { REDIRECT_URI } from "../src/providers/email-ingest/oauth-redirect-uri.js";
 import { env } from "../src/config/env.js";
 import { pool, assertDatabaseConfigured } from "../src/db/client.js";
+
+// Same (channel, externalId) pair scripts/chat.ts uses for the CLI operator —
+// so a connection made here shows up as already-connected in `npm run chat`.
+const CLI_CHANNEL = "cli";
+const CLI_EXTERNAL_ID = "local";
 
 async function main() {
   assertDatabaseConfigured();
@@ -47,8 +54,16 @@ async function main() {
   console.log("Fetching the connected account's email address...");
   const emailAddress = await setup.fetchEmailAddress(tokens.accessToken);
 
+  const conversationRepo = new ConversationRepo();
+  const channelIdentityId = await conversationRepo.getOrCreateIdentity(CLI_CHANNEL, CLI_EXTERNAL_ID);
+  const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
+  if (!userId) {
+    throw new Error(`Failed to resolve the local CLI user (channel identity ${channelIdentityId}).`);
+  }
+
   const repo = new EmailConnectionRepo();
   await repo.upsert({
+    userId,
     provider,
     emailAddress,
     accessToken: tokens.accessToken,
