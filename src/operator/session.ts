@@ -3,8 +3,9 @@ import { fileURLToPath } from "node:url";
 import type { LlmClient, LlmConversationTurn } from "../agent/llm/llm.port.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { UserRepo } from "../db/repositories/user.repo.js";
-import { type ConsentGate, DbConsentGate, decideConsent, CONSENT_NOTICE } from "../compliance/consent.js";
-import { TOOL_DEFINITIONS, OperatorTools } from "./tools.js";
+import { PendingConfirmationRepo } from "../db/repositories/pending-confirmation.repo.js";
+import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply, CONSENT_NOTICE } from "../compliance/consent.js";
+import { TOOL_DEFINITIONS, OperatorTools, describeConfirmedActionResult } from "./tools.js";
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
 
@@ -111,6 +112,33 @@ export async function handleTurn(
     await repo.appendTurn(channelIdentityId, "user", turn.text);
     await repo.appendTurn(channelIdentityId, "assistant", consentDecision.responseText);
     return consentDecision.responseText;
+  }
+
+  // Deterministic confirmation gate for irreversible actions (forget_my_data,
+  // disconnect_email) — same rigor and same reason as the consent gate above:
+  // an LLM can hallucinate having completed an irreversible action without
+  // ever calling its tool, so whether one of these actually executes is
+  // decided here, by code matching an explicit "yes" against a pending
+  // request, never by anything the LLM itself generates. See
+  // src/db/repositories/pending-confirmation.repo.ts.
+  const pendingConfirmationRepo = new PendingConfirmationRepo();
+  const pendingConfirmation = await pendingConfirmationRepo.findActiveForUser(userId);
+  if (pendingConfirmation) {
+    await pendingConfirmationRepo.resolve(pendingConfirmation.id);
+
+    const responseText = isAffirmativeReply(turn.text)
+      ? describeConfirmedActionResult(
+          pendingConfirmation.actionType,
+          await new OperatorTools(userId, channelIdentityId).executeConfirmedAction(
+            pendingConfirmation.actionType,
+            pendingConfirmation.actionParams,
+          ),
+        )
+      : "Okay, cancelled — nothing was changed.";
+
+    await repo.appendTurn(channelIdentityId, "user", turn.text);
+    await repo.appendTurn(channelIdentityId, "assistant", responseText);
+    return responseText;
   }
 
   const tools = new OperatorTools(userId, channelIdentityId);

@@ -9,6 +9,7 @@ import { EmailConnectionRepo, type EmailProviderName } from "../db/repositories/
 import { ClaimRepo } from "../db/repositories/claim.repo.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { ConsentRepo } from "../db/repositories/consent.repo.js";
+import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repositories/pending-confirmation.repo.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
 import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
@@ -20,6 +21,12 @@ import type { Booking } from "../domain/claim/claim.types.js";
  * and beyond) is a real transaction/correspondence, kept for the legal-claims
  * and financial record-keeping reasons GDPR Art. 17(3) allows for. */
 const PRE_SEND_CLAIM_STATUSES = new Set(["draft", "pending_approval", "declined"]);
+
+/** How long a forget_my_data/disconnect_email confirmation request stays
+ * live — short on purpose: this only ever needs to survive to the very next
+ * message, and a short window limits how long a stray later "yes" (said for
+ * an unrelated reason) could theoretically land inside it. */
+const PENDING_CONFIRMATION_TTL_MINUTES = 5;
 
 /** Thrown by resolveThreadId when a threadId doesn't exist or belongs to a
  * different user. Deliberately worded the same either way — this is an
@@ -165,9 +172,12 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "disconnect_email",
     description:
-      "Disconnects the user's Gmail or Outlook inbox — revokes the authorization with the provider where " +
-      "possible and deletes the stored connection. Only call when the user explicitly asks to disconnect or " +
-      "remove access to an email account.",
+      "Requests disconnecting the user's Gmail or Outlook inbox. Does NOT disconnect it immediately — this only " +
+      "starts a confirmation the system itself handles on the user's next message; it returns a confirmationPrompt " +
+      "you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not tell the user it's " +
+      "done, and do not call this tool again to 'confirm' — you have no way to confirm it yourself, only the " +
+      "user's own next reply does that. Only call when the user explicitly asks to disconnect or remove access " +
+      "to an email account.",
     inputSchema: {
       type: "object",
       properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
@@ -177,13 +187,13 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "forget_my_data",
     description:
-      "Deletes the user's data held by this bot: any connected email account (revoking authorization where " +
-      "possible), the full chat history, and the consent record. Any claim that was never actually sent to an " +
-      "airline is deleted too. A claim that WAS sent (or paid out) is kept, along with the audit log, for " +
-      "legal/financial record-keeping reasons required by law — always tell the user plainly what was kept and " +
-      "why, never silently. This is irreversible and erases this conversation's own history. Only call when the " +
-      "user has explicitly and unambiguously asked to delete/forget their data — never speculatively, and never " +
-      "from an ambiguous or joking remark.",
+      "Requests deleting the user's data held by this bot. Does NOT delete anything immediately — this only " +
+      "starts a confirmation the system itself handles on the user's next message; it returns a " +
+      "confirmationPrompt you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not " +
+      "tell the user their data is deleted, and do not call this tool again to 'confirm' — you have no way to " +
+      "confirm it yourself, only the user's own next reply does that. Only call when the user has explicitly and " +
+      "unambiguously asked to delete/forget their data — never speculatively, and never from an ambiguous or " +
+      "joking remark.",
     inputSchema: { type: "object", properties: {} },
   },
 ];
@@ -265,11 +275,30 @@ export class OperatorTools {
       case "submit_payment_confirmation":
         return this.submitPaymentConfirmation(input as unknown as PaymentInput);
       case "disconnect_email":
-        return this.disconnectEmail(input["provider"] as EmailProviderName);
+        return this.requestDisconnectEmail(input["provider"] as EmailProviderName);
       case "forget_my_data":
-        return this.forgetMyData();
+        return this.requestForgetMyData();
       default:
         throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+
+  /**
+   * Executes a confirmed forget_my_data/disconnect_email request — called
+   * ONLY from src/operator/session.ts's deterministic pending-confirmation
+   * handling, never from dispatch() and never reachable by the LLM. This is
+   * the one and only path that actually deletes/disconnects anything; an LLM
+   * calling disconnect_email or forget_my_data can never reach it directly,
+   * no matter what it generates or claims.
+   */
+  async executeConfirmedAction(actionType: ConfirmableActionType, actionParams: Record<string, unknown>): Promise<unknown> {
+    switch (actionType) {
+      case "forget_my_data":
+        return this.forgetMyData();
+      case "disconnect_email":
+        return this.disconnectEmail(actionParams["provider"] as EmailProviderName);
+      default:
+        throw new Error(`Unknown confirmable action type: ${String(actionType)}`);
     }
   }
 
@@ -298,10 +327,81 @@ export class OperatorTools {
     };
   }
 
+  /** Starts (does not execute) a disconnect_email confirmation — see
+   * schema.ts's pending_confirmations doc comment for why execution is
+   * deliberately not reachable from here. */
+  private async requestDisconnectEmail(provider: EmailProviderName) {
+    const connection = await new EmailConnectionRepo().findByUserAndProvider(this.userId, provider);
+    if (!connection) {
+      return { status: "not_connected" as const };
+    }
+
+    await new PendingConfirmationRepo().create({
+      userId: this.userId,
+      channelIdentityId: this.channelIdentityId,
+      actionType: "disconnect_email",
+      actionParams: { provider },
+      expiresAtUtc: new Date(Date.now() + PENDING_CONFIRMATION_TTL_MINUTES * 60_000),
+    });
+
+    return {
+      status: "confirmation_required" as const,
+      confirmationPrompt:
+        `This will disconnect ${connection.emailAddress} (${provider}) and revoke authorization with the ` +
+        `provider where possible. Reply "yes" to confirm, or anything else to cancel.`,
+    };
+  }
+
+  /** Starts (does not execute) a forget_my_data confirmation, having already
+   * looked up exactly what would be deleted vs. kept so the confirmation
+   * prompt is accurate — see schema.ts's pending_confirmations doc comment
+   * for why execution is deliberately not reachable from here. */
+  private async requestForgetMyData() {
+    const emailRepo = new EmailConnectionRepo();
+    const connectedEmails: string[] = [];
+    for (const provider of ["gmail", "outlook"] as const) {
+      const connection = await emailRepo.findByUserAndProvider(this.userId, provider);
+      if (connection) {
+        connectedEmails.push(connection.emailAddress);
+      }
+    }
+
+    const allClaims = await this.claimRepo.findAllForUser(this.userId);
+    const deletableClaimCount = allClaims.filter((c) => PRE_SEND_CLAIM_STATUSES.has(c.status)).length;
+    const keptClaimCount = allClaims.length - deletableClaimCount;
+
+    const willDelete = ["your chat history", "your consent record"];
+    if (connectedEmails.length > 0) {
+      willDelete.push(`your connected email (${connectedEmails.join(", ")})`);
+    }
+    if (deletableClaimCount > 0) {
+      willDelete.push(`${deletableClaimCount} claim(s) never sent to an airline`);
+    }
+
+    let prompt = `This will permanently delete: ${willDelete.join(", ")}. This cannot be undone.`;
+    if (keptClaimCount > 0) {
+      prompt +=
+        ` ${keptClaimCount} claim(s) that were actually sent (or paid out) will be kept, along with the audit ` +
+        `log, for legal/financial record-keeping required by law.`;
+    }
+    prompt += ` Reply "yes" to confirm, or anything else to cancel.`;
+
+    await new PendingConfirmationRepo().create({
+      userId: this.userId,
+      channelIdentityId: this.channelIdentityId,
+      actionType: "forget_my_data",
+      actionParams: {},
+      expiresAtUtc: new Date(Date.now() + PENDING_CONFIRMATION_TTL_MINUTES * 60_000),
+    });
+
+    return { status: "confirmation_required" as const, confirmationPrompt: prompt };
+  }
+
   /** Revokes with the provider where supported (Gmail; not Outlook — see
    * oauth-providers.ts) and deletes the local connection regardless of
    * whether revocation succeeded — a token we can't invalidate is still a
-   * token we shouldn't keep holding onto. */
+   * token we shouldn't keep holding onto. Only reachable via
+   * executeConfirmedAction — see that method's doc comment. */
   private async disconnectEmail(provider: EmailProviderName) {
     const repo = new EmailConnectionRepo();
     const connection = await repo.findByUserAndProvider(this.userId, provider);
@@ -342,7 +442,8 @@ export class OperatorTools {
    * paid out, and the audit log) — see GDPR Art. 17(3)'s legal-claims and
    * legal-obligation exceptions to the right to erasure. Reports exactly
    * what was kept and why so the caller can relay that plainly rather than
-   * silently keeping data the user asked to have deleted.
+   * silently keeping data the user asked to have deleted. Only reachable via
+   * executeConfirmedAction — see that method's doc comment.
    */
   private async forgetMyData() {
     const emailRepo = new EmailConnectionRepo();
@@ -554,6 +655,47 @@ export class OperatorTools {
       payout: result["payout"],
     };
   }
+}
+
+/**
+ * Turns the real result of executeConfirmedAction into the text actually
+ * sent to the user — generated by code from the tool's real return value,
+ * never by the LLM, so the confirmation message can't say anything the
+ * action didn't actually do. Called only from src/operator/session.ts's
+ * deterministic pending-confirmation handling.
+ */
+export function describeConfirmedActionResult(actionType: ConfirmableActionType, result: unknown): string {
+  if (actionType === "forget_my_data") {
+    const r = result as {
+      disconnectedEmails: { emailAddress: string }[];
+      deletedClaimCount: number;
+      keptClaims: { count: number; reason: string } | null;
+    };
+    const parts = ["Done — your data has been deleted."];
+    if (r.disconnectedEmails.length > 0) {
+      parts.push(`Disconnected: ${r.disconnectedEmails.map((e) => e.emailAddress).join(", ")}.`);
+    }
+    parts.push(
+      `Deleted ${r.deletedClaimCount} claim(s) never sent to an airline, your chat history, and your consent record.`,
+    );
+    if (r.keptClaims) {
+      parts.push(`Kept ${r.keptClaims.count} claim(s): ${r.keptClaims.reason}`);
+    }
+    return parts.join(" ");
+  }
+
+  if (actionType === "disconnect_email") {
+    const r = result as { disconnected: boolean; emailAddress?: string; revokedWithProvider?: boolean; note?: string };
+    if (!r.disconnected) {
+      return "There was nothing connected to disconnect.";
+    }
+    return (
+      `Disconnected ${r.emailAddress}.` +
+      (r.revokedWithProvider ? " Authorization was revoked with the provider." : ` ${r.note ?? ""}`)
+    );
+  }
+
+  return "Done.";
 }
 
 interface ScanInboxInput {

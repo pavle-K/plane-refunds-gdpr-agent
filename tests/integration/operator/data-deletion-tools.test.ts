@@ -1,9 +1,12 @@
 /**
  * Runs against a real local Postgres, same skip convention as the rest of
  * this repo's integration suite. Covers disconnect_email and forget_my_data
- * — real DB reads/writes throughout, only the outbound Google revoke call is
- * stubbed (never a real network call to Google, consistent with the rest of
- * this suite).
+ * as a two-phase flow: dispatch() only ever REQUESTS (creates a pending
+ * confirmation, deletes/disconnects nothing), and executeConfirmedAction()
+ * is the only path that actually performs the action — see
+ * schema.ts's pending_confirmations doc comment and
+ * src/operator/session.ts's deterministic confirmation gate for why. Only
+ * the outbound Google revoke call is stubbed (never a real network call).
  */
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -15,6 +18,7 @@ import { EmailConnectionRepo } from "../../../src/db/repositories/email-connecti
 import { ConsentRepo } from "../../../src/db/repositories/consent.repo.js";
 import { ClaimRepo } from "../../../src/db/repositories/claim.repo.js";
 import { AuditRepo } from "../../../src/db/repositories/audit.repo.js";
+import { PendingConfirmationRepo } from "../../../src/db/repositories/pending-confirmation.repo.js";
 
 const canRun = Boolean(env.DATABASE_URL && env.TOKEN_ENCRYPTION_KEY);
 
@@ -42,13 +46,78 @@ async function makeOperatorTools() {
   return { tools: new OperatorTools(userId, channelIdentityId), userId, channelIdentityId };
 }
 
-describe.skipIf(!canRun)("disconnect_email (real Postgres)", () => {
-  it("reports not_connected when there's nothing to disconnect", async () => {
-    const { tools } = await makeOperatorTools();
+describe.skipIf(!canRun)("disconnect_email / forget_my_data — request phase (dispatch)", () => {
+  it("disconnect_email reports not_connected and creates no pending confirmation when nothing is connected", async () => {
+    const { tools, userId } = await makeOperatorTools();
     const result = await tools.dispatch("disconnect_email", { provider: "gmail" });
-    expect(result).toEqual({ disconnected: false, reason: "not_connected" });
+    expect(result).toEqual({ status: "not_connected" });
+    expect(await new PendingConfirmationRepo().findActiveForUser(userId)).toBeNull();
   });
 
+  it("disconnect_email requests confirmation and does NOT disconnect anything yet", async () => {
+    const { tools, userId } = await makeOperatorTools();
+    const emailAddress = `request-disconnect-${randomUUID()}@example.com`;
+    await new EmailConnectionRepo().upsert({
+      userId,
+      provider: "gmail",
+      emailAddress,
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      accessTokenExpiresAtUtc: new Date(Date.now() + 60_000),
+    });
+
+    const result = (await tools.dispatch("disconnect_email", { provider: "gmail" })) as {
+      status: string;
+      confirmationPrompt: string;
+    };
+
+    expect(result.status).toBe("confirmation_required");
+    expect(result.confirmationPrompt).toContain(emailAddress);
+
+    // Nothing actually happened yet.
+    const stillConnected = await new EmailConnectionRepo().findByUserAndProvider(userId, "gmail");
+    expect(stillConnected?.emailAddress).toBe(emailAddress);
+
+    const pending = await new PendingConfirmationRepo().findActiveForUser(userId);
+    expect(pending?.actionType).toBe("disconnect_email");
+    expect(pending?.actionParams).toEqual({ provider: "gmail" });
+  });
+
+  it("forget_my_data requests confirmation, mentions specifics, and does NOT delete anything yet", async () => {
+    const { tools, userId, channelIdentityId } = await makeOperatorTools();
+    const emailAddress = `request-forget-${randomUUID()}@example.com`;
+    await new EmailConnectionRepo().upsert({
+      userId,
+      provider: "gmail",
+      emailAddress,
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      accessTokenExpiresAtUtc: new Date(Date.now() + 60_000),
+    });
+    await new ConsentRepo().record({ userId, policyVersion: "v1-placeholder", channel: "telegram" });
+    await new ConversationRepo().appendTurn(channelIdentityId, "user", "hello");
+
+    const draftClaimId = `claim-${randomUUID()}`;
+    await new ClaimRepo().create(draftClaimId, userId, "draft");
+
+    const result = (await tools.dispatch("forget_my_data", {})) as { status: string; confirmationPrompt: string };
+
+    expect(result.status).toBe("confirmation_required");
+    expect(result.confirmationPrompt).toContain(emailAddress);
+    expect(result.confirmationPrompt).toContain("1 claim");
+
+    // Nothing actually happened yet — everything is still there.
+    expect(await new EmailConnectionRepo().findByUserAndProvider(userId, "gmail")).not.toBeNull();
+    expect(await new ConsentRepo().hasConsented(userId)).toBe(true);
+    expect(await new ConversationRepo().loadHistory(channelIdentityId)).not.toEqual([]);
+    expect(await new ClaimRepo().findById(draftClaimId)).not.toBeNull();
+
+    const pending = await new PendingConfirmationRepo().findActiveForUser(userId);
+    expect(pending?.actionType).toBe("forget_my_data");
+  });
+});
+
+describe.skipIf(!canRun)("disconnect_email — execution phase (executeConfirmedAction)", () => {
   it("revokes with Google, deletes the local connection, and records an audit entry", async () => {
     const { tools, userId } = await makeOperatorTools();
     const emailAddress = `disconnect-${randomUUID()}@example.com`;
@@ -62,7 +131,7 @@ describe.skipIf(!canRun)("disconnect_email (real Postgres)", () => {
     });
     stubGmailRevoke(true);
 
-    const result = (await tools.dispatch("disconnect_email", { provider: "gmail" })) as {
+    const result = (await tools.executeConfirmedAction("disconnect_email", { provider: "gmail" })) as {
       disconnected: boolean;
       revokedWithProvider: boolean;
     };
@@ -91,7 +160,7 @@ describe.skipIf(!canRun)("disconnect_email (real Postgres)", () => {
     });
     stubGmailRevoke(false);
 
-    const result = (await tools.dispatch("disconnect_email", { provider: "gmail" })) as {
+    const result = (await tools.executeConfirmedAction("disconnect_email", { provider: "gmail" })) as {
       disconnected: boolean;
       revokedWithProvider: boolean;
       note?: string;
@@ -116,7 +185,7 @@ describe.skipIf(!canRun)("disconnect_email (real Postgres)", () => {
       accessTokenExpiresAtUtc: new Date(Date.now() + 60_000),
     });
 
-    const result = (await tools.dispatch("disconnect_email", { provider: "outlook" })) as {
+    const result = (await tools.executeConfirmedAction("disconnect_email", { provider: "outlook" })) as {
       disconnected: boolean;
       revokedWithProvider: boolean;
     };
@@ -128,11 +197,13 @@ describe.skipIf(!canRun)("disconnect_email (real Postgres)", () => {
   });
 });
 
-describe.skipIf(!canRun)("forget_my_data (real Postgres)", () => {
+describe.skipIf(!canRun)("forget_my_data — execution phase (executeConfirmedAction)", () => {
   it("succeeds with nothing to erase", async () => {
     const { tools } = await makeOperatorTools();
-    const result = (await tools.dispatch("forget_my_data", {})) as { erased: boolean; deletedClaimCount: number };
-    expect(result.erased).toBe(true);
+    const result = (await tools.executeConfirmedAction("forget_my_data", {})) as {
+      disconnectedEmails: unknown[];
+      deletedClaimCount: number;
+    };
     expect(result.deletedClaimCount).toBe(0);
   });
 
@@ -162,14 +233,12 @@ describe.skipIf(!canRun)("forget_my_data (real Postgres)", () => {
     await claimRepo.create(sentClaimId, userId, "draft");
     await claimRepo.updateStatus(sentClaimId, "sent");
 
-    const result = (await tools.dispatch("forget_my_data", {})) as {
-      erased: boolean;
+    const result = (await tools.executeConfirmedAction("forget_my_data", {})) as {
       disconnectedEmails: unknown[];
       deletedClaimCount: number;
       keptClaims: { count: number; reason: string } | null;
     };
 
-    expect(result.erased).toBe(true);
     expect(result.disconnectedEmails).toHaveLength(1);
     expect(result.deletedClaimCount).toBe(1);
     expect(result.keptClaims).toEqual({ count: 1, reason: expect.stringContaining("legal") });
@@ -207,7 +276,7 @@ describe.skipIf(!canRun)("forget_my_data (real Postgres)", () => {
     await claimRepo.create(declinedId, userId, "draft");
     await claimRepo.updateStatus(declinedId, "declined");
 
-    const result = (await tools.dispatch("forget_my_data", {})) as { deletedClaimCount: number };
+    const result = (await tools.executeConfirmedAction("forget_my_data", {})) as { deletedClaimCount: number };
     expect(result.deletedClaimCount).toBe(1); // only the declined one
 
     for (const id of postSendIds) {

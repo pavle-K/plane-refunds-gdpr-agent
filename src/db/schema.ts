@@ -143,6 +143,35 @@ export const claims = pgTable("claims", {
 });
 
 /**
+ * Server-held confirmation gate for irreversible actions (forget_my_data,
+ * disconnect_email) — deliberately mirrors oauth_pending_flows' shape and
+ * reasoning: the LLM can request one of these actions (recognizing intent
+ * from natural language is legitimate LLM work), but whether it actually
+ * executes is decided by deterministic code matching an explicit "yes"
+ * against this row on the user's very next message, never by anything the
+ * LLM itself generates. This exists because an LLM can hallucinate having
+ * completed an irreversible action without ever calling its tool — see
+ * src/operator/session.ts's pending-confirmation handling, which is checked
+ * before a message ever reaches the LLM, same as the consent gate.
+ * Short-lived by design (expiresAtUtc) and consumed on the very next message
+ * regardless of outcome, so a stray "yes" said later for an unrelated reason
+ * can never retroactively confirm a stale request.
+ */
+export const pendingConfirmations = pgTable("pending_confirmations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  channelIdentityId: uuid("channel_identity_id")
+    .notNull()
+    .references(() => channelIdentities.id),
+  actionType: text("action_type").notNull(), // "forget_my_data" | "disconnect_email"
+  actionParams: jsonb("action_params").notNull(), // e.g. { provider: "gmail" } for disconnect_email
+  createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  expiresAtUtc: timestamp("expires_at_utc", { withTimezone: true }).notNull(),
+});
+
+/**
  * Chat turns for a channel identity, in send order — this is what
  * src/operator/session.ts loads as LLM conversation history and appends to
  * after each turn, replacing the in-memory-only history the CLI used to keep.
