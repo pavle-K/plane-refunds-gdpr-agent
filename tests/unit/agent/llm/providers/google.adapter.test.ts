@@ -76,6 +76,26 @@ describe("GoogleLlmClient", () => {
       expect(onToolCall).toHaveBeenCalledWith({ name: "lookup", input: { x: 1 } });
     });
 
+    it("sends the function result back with role 'user', not 'function' (Gemini has no such role)", async () => {
+      const fetchMock = mockFetchSequence([
+        { candidates: [{ content: { parts: [{ functionCall: { name: "lookup", args: { x: 1 } } }] } }] },
+        { candidates: [{ content: { parts: [{ text: "done" }] } }] },
+      ]);
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      await client.completeWithTools({
+        system: "s",
+        prompt: "p",
+        tools: [{ name: "lookup", description: "d", inputSchema: { type: "object" } }],
+        onToolCall: vi.fn().mockResolvedValue("tool result"),
+      });
+
+      const secondCall = fetchMock.mock.calls[1] as [string, RequestInit];
+      const body = JSON.parse(secondCall[1].body as string) as { contents: Array<{ role: string }> };
+      const functionResultTurn = body.contents[body.contents.length - 1]!;
+      expect(functionResultTurn.role).toBe("user");
+    });
+
     it("includes prior conversation history ahead of the current prompt, mapping assistant to model", async () => {
       const fetchMock = mockFetchOnce({ candidates: [{ content: { parts: [{ text: "done" }] } }] });
       const client = new GoogleLlmClient("key", "gemini-3-pro");
