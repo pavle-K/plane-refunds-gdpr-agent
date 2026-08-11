@@ -57,6 +57,7 @@ import {
   type TestFlightCase,
 } from "./lib/find-real-flight.js";
 import { createAirlineDirectoryProvider } from "../src/providers/airline-directory/index.js";
+import { createAirportReferenceProvider } from "../src/providers/airport-reference/index.js";
 
 function getArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -182,7 +183,7 @@ async function main() {
       process.exit(1);
     }
     const flight = result.value;
-    const eligibility = await describeRealEligibility(flight, createAirlineDirectoryProvider());
+    const eligibility = await describeRealEligibility(flight, createAirlineDirectoryProvider(), createAirportReferenceProvider());
     await sendOneTestEmail(transport, { smtpUser, to, passengerName, carrierName, flight, eligibility });
   } else {
     const airportArg = getArg("airport");

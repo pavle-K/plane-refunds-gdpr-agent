@@ -28,8 +28,9 @@ import { AeroApiFlightStatusAdapter, toFlightStatusResult, type AeroApiFlight } 
 import type { FlightStatusResult, FlightStatusQuery, FlightStatusError } from "../../src/providers/flight-status/flight-status.port.js";
 import type { Result } from "../../src/lib/result.js";
 import { checkEligibility } from "../../src/domain/ec261/eligibility.js";
-import { getAirportReference } from "../../src/domain/ec261/airport-reference.js";
+import { isEuMemberCountry } from "../../src/domain/ec261/eu-membership.js";
 import { createAirlineDirectoryProvider } from "../../src/providers/airline-directory/index.js";
+import { createAirportReferenceProvider, type AirportReferenceProvider } from "../../src/providers/airport-reference/index.js";
 
 const BASE_URL = "https://aeroapi.flightaware.com/aeroapi";
 
@@ -195,6 +196,7 @@ async function confirmWithRetry(
 export async function describeRealEligibility(
   flight: FlightStatusResult,
   airlineDirectory: ReturnType<typeof createAirlineDirectoryProvider>,
+  airportReference: AirportReferenceProvider,
 ): Promise<{ eligible: boolean; reason: string }> {
   if (flight.status === "cancelled") {
     return {
@@ -206,21 +208,19 @@ export async function describeRealEligibility(
     return { eligible: false, reason: `status is "${flight.status}" — no compensable disruption at arrival.` };
   }
 
-  // Matches check-eligibility.node.ts exactly: default both to false, and let
-  // a failure on EITHER lookup fall through as non-EU for just that one side
-  // — not both. A departure lookup that already succeeded (e.g. a real EU
-  // airport) must still count even if the arrival airport is missing from
-  // this starter dataset; discarding it would wrongly report "not eligible"
-  // for a flight that's eligible purely on departure alone (Article 3(1)(a)
-  // doesn't care about the arrival airport or carrier at all).
-  let departureCountryIsEU = false;
-  let arrivalCountryIsEU = false;
-  try {
-    departureCountryIsEU = getAirportReference(flight.departureAirportIata).countryIsEu;
-    arrivalCountryIsEU = getAirportReference(flight.arrivalAirportIata).countryIsEu;
-  } catch {
-    // Unknown airport reference — falls through as non-EU for that side only.
-  }
+  // Matches check-eligibility.node.ts exactly: a failure on EITHER lookup
+  // falls through as non-EU for just that one side — not both. A departure
+  // lookup that already succeeded (e.g. a real EU airport) must still count
+  // even if the arrival airport is missing from the airports table;
+  // discarding it would wrongly report "not eligible" for a flight that's
+  // eligible purely on departure alone (Article 3(1)(a) doesn't care about
+  // the arrival airport or carrier at all).
+  const [departureAirportResult, arrivalAirportResult] = await Promise.all([
+    airportReference.getAirport(flight.departureAirportIata),
+    airportReference.getAirport(flight.arrivalAirportIata),
+  ]);
+  const departureCountryIsEU = departureAirportResult.ok && isEuMemberCountry(departureAirportResult.value.countryIsoCode);
+  const arrivalCountryIsEU = arrivalAirportResult.ok && isEuMemberCountry(arrivalAirportResult.value.countryIsoCode);
 
   const airlineResult = await airlineDirectory.getAirline(flight.operatingCarrierIataCode);
   const operatingCarrierIsEU = airlineResult.ok ? airlineResult.value.isEuCarrier : false;
@@ -265,6 +265,7 @@ async function searchOneBoard(
   boardType: BoardType,
   lookbackDays: number,
   airlineDirectory: ReturnType<typeof createAirlineDirectoryProvider>,
+  airportReference: AirportReferenceProvider,
   pacer: RequestPacer,
   state: SearchState,
 ): Promise<void> {
@@ -279,7 +280,7 @@ async function searchOneBoard(
     if (state.remaining.size === 0) return;
 
     // Classified directly from the board data — no request spent yet.
-    const eligibility = await describeRealEligibility(boardFlight, airlineDirectory);
+    const eligibility = await describeRealEligibility(boardFlight, airlineDirectory, airportReference);
     const testCase = classifyCase(boardFlight, eligibility);
     if (!state.remaining.has(testCase)) continue;
 
@@ -299,7 +300,7 @@ async function searchOneBoard(
     }
 
     const confirmedFlight = confirmed.value;
-    const confirmedEligibility = await describeRealEligibility(confirmedFlight, airlineDirectory);
+    const confirmedEligibility = await describeRealEligibility(confirmedFlight, airlineDirectory, airportReference);
     const confirmedCase = classifyCase(confirmedFlight, confirmedEligibility);
     if (!state.remaining.has(confirmedCase)) continue; // confirmation disagreed with the board — skip
 
@@ -338,6 +339,7 @@ export async function findTestFlightSet(
 ): Promise<TestFlightCaseResult[]> {
   const lookbackDays = opts.lookbackDays ?? 7;
   const airlineDirectory = createAirlineDirectoryProvider();
+  const airportReference = createAirportReferenceProvider();
   const pacer = new RequestPacer();
 
   const state: SearchState = {
@@ -352,14 +354,14 @@ export async function findTestFlightSet(
   if (!opts.airports) {
     for (const airport of EU_DEPARTURE_AIRPORTS) {
       if (state.remaining.size === 0 || state.rateLimited) break;
-      await searchOneBoard(flightStatus, apiKey, airport, "departures", lookbackDays, airlineDirectory, pacer, state);
+      await searchOneBoard(flightStatus, apiKey, airport, "departures", lookbackDays, airlineDirectory, airportReference, pacer, state);
     }
   }
 
   const arrivalAirports = opts.airports ?? DEFAULT_CANDIDATE_AIRPORTS;
   for (const airport of arrivalAirports) {
     if (state.remaining.size === 0 || state.rateLimited) break;
-    await searchOneBoard(flightStatus, apiKey, airport, "arrivals", lookbackDays, airlineDirectory, pacer, state);
+    await searchOneBoard(flightStatus, apiKey, airport, "arrivals", lookbackDays, airlineDirectory, airportReference, pacer, state);
   }
 
   if (state.remaining.size > 0) {

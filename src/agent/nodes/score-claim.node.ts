@@ -2,16 +2,17 @@ import { z } from "zod";
 import type { GraphStateType } from "../state.js";
 import type { WeatherProvider } from "../../providers/weather/weather.port.js";
 import type { DisruptionProvider } from "../../providers/disruption/disruption.port.js";
+import type { AirportReferenceProvider } from "../../providers/airport-reference/airport-reference.port.js";
 import type { LlmClient } from "../llm/llm.port.js";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
 import { assessExtraordinaryCircumstance } from "../../domain/ec261/extraordinary.js";
-import { getAirportReference } from "../../domain/ec261/airport-reference.js";
 
 export interface ScoreClaimNodeDeps {
   weather: WeatherProvider;
   disruption: DisruptionProvider;
+  airportReference: AirportReferenceProvider;
   llm: LlmClient;
   auditLog: AuditLog;
 }
@@ -37,18 +38,18 @@ export function createScoreClaimNode(deps: ScoreClaimNodeDeps) {
       state.flightStatuses[state.flightStatuses.length - 1]!;
 
     let weatherObservation = null;
-    try {
-      const ref = getAirportReference(relevantSegment.departureAirportIata);
+    const departureAirportResult = await deps.airportReference.getAirport(relevantSegment.departureAirportIata);
+    if (departureAirportResult.ok) {
       const weatherResult = await deps.weather.getObservation({
-        icaoCode: ref.icao,
+        icaoCode: departureAirportResult.value.icaoCode,
         atUtc: relevantSegment.scheduledDepartureUtc,
       });
       if (weatherResult.ok) {
         weatherObservation = weatherResult.value;
       }
-    } catch {
-      // Unknown airport reference — proceed without weather evidence.
     }
+    // Unknown airport reference — proceed without weather evidence, same as
+    // any other weather lookup failure below.
 
     const disruptionResult = await deps.disruption.getDisruptions({
       airportIata: relevantSegment.departureAirportIata,
