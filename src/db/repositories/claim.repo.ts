@@ -1,10 +1,11 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../client.js";
 import { claims } from "../schema.js";
 
 export interface ClaimOwnershipRow {
   id: string;
   userId: string;
+  bookingReference: string;
   status: string;
   createdAtUtc: Date;
   updatedAtUtc: Date;
@@ -14,12 +15,26 @@ export interface ClaimOwnershipRow {
  * claims table doc comment. Deliberately NOT the full claim record; that stays
  * in the LangGraph Postgres checkpointer, keyed by the same id. */
 export class ClaimRepo {
-  async create(id: string, userId: string, status: string): Promise<void> {
-    await db.insert(claims).values({ id, userId, status });
+  async create(id: string, userId: string, bookingReference: string, status: string): Promise<void> {
+    await db.insert(claims).values({ id, userId, bookingReference, status });
   }
 
   async findById(id: string): Promise<ClaimOwnershipRow | null> {
     const rows = await db.select().from(claims).where(eq(claims.id, id)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** The authoritative identity check behind OperatorTools.startClaim's
+   * re-check protection — see schema.ts's claims table doc comment for why
+   * this exists: a booking reference this user has already checked must
+   * always resolve back to that SAME claim, never spawn a new one seeded
+   * with possibly-different (wrong) flight/date inputs. */
+  async findByBookingReference(userId: string, bookingReference: string): Promise<ClaimOwnershipRow | null> {
+    const rows = await db
+      .select()
+      .from(claims)
+      .where(and(eq(claims.userId, userId), eq(claims.bookingReference, bookingReference)))
+      .limit(1);
     return rows[0] ?? null;
   }
 

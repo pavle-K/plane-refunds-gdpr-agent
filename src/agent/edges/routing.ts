@@ -10,8 +10,11 @@ export function routeAfterEligibility(state: GraphStateType): EligibilityRoute {
 
 export type ApprovalRoute = "sendClaim" | "declined";
 
-/** Only claimStatus === "sent" (set exclusively by human-approval.node.ts on
- * approve/edit) proceeds to sendClaim — decline routes to the terminal end. */
+/** Only claimStatus === "sent" (set by human-approval.node.ts on approve/edit,
+ * but ONLY when the carrier actually has an automated send path — see that
+ * node's doc comment) proceeds to sendClaim. Everything else — "declined", or
+ * "needs_manual_submission" for a carrier sendClaim would refuse anyway —
+ * routes to the terminal end without ever attempting a send. */
 export function routeAfterApproval(state: GraphStateType): ApprovalRoute {
   return state.claimStatus === "sent" ? "sendClaim" : "declined";
 }

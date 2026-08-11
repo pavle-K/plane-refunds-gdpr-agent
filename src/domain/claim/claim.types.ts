@@ -3,6 +3,7 @@ export type ClaimStatus =
   | "pending_approval"
   | "declined"
   | "sent"
+  | "needs_manual_submission"
   | "awaiting_response"
   | "rejected"
   | "rebutting"

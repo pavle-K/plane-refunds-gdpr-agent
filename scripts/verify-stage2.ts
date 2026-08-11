@@ -13,7 +13,8 @@ import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js
 import { FakeFlightStatusAdapter, buildOnTimeResult } from "../src/providers/flight-status/fake.adapter.js";
 import { FakeWeatherAdapter, buildClearSkyObservation } from "../src/providers/weather/fake.adapter.js";
 import { FakeDisruptionAdapter } from "../src/providers/disruption/fake.adapter.js";
-import { StaticAirlineDirectoryAdapter } from "../src/providers/airline-directory/static.adapter.js";
+import { buildAnyCodeEmailAirlineDirectory } from "../src/providers/airline-directory/fake.adapter.js";
+import { FakeAirportReferenceAdapter, buildAirportFacts } from "../src/providers/airport-reference/fake.adapter.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/fake.adapter.js";
 import { FakePaymentsAdapter } from "../src/providers/payments/fake.adapter.js";
 import { FakeLlmClient } from "../src/agent/llm/fake.adapter.js";
@@ -78,12 +79,27 @@ async function main() {
   const emailSend = new FakeEmailSendAdapter();
   const payments = new FakePaymentsAdapter();
 
+  const airportReference = new FakeAirportReferenceAdapter();
+  airportReference.seed(
+    "FRA",
+    ok(buildAirportFacts({ iataCode: "FRA", icaoCode: "EDDF", name: "Frankfurt", countryIsoCode: "DE", latitude: 50.0379, longitude: 8.5622 })),
+  );
+  airportReference.seed(
+    "SIN",
+    ok(buildAirportFacts({ iataCode: "SIN", icaoCode: "WSSS", name: "Singapore Changi", countryIsoCode: "SG", latitude: 1.3644, longitude: 103.9915 })),
+  );
+
   const deps = {
     extractor: async () => null, // unused — booking supplied directly, ingest short-circuits
     flightStatus,
     weather,
     disruption: new FakeDisruptionAdapter(),
-    airlineDirectory: new StaticAirlineDirectoryAdapter(),
+    // StaticAirlineDirectoryAdapter's real data is deliberately all
+    // "unsupported" (no sourced/verified submission channel yet) — this
+    // script needs the send path to actually work, so it uses a stub with a
+    // working email method instead, same as the equivalent unit tests.
+    airlineDirectory: buildAnyCodeEmailAirlineDirectory(),
+    airportReference,
     emailSend,
     payments,
     llm,

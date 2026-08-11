@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, uuid, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, jsonb, uuid, unique, doublePrecision } from "drizzle-orm/pg-core";
 
 /**
  * One row per person, independent of which channel(s) they talk through or which
@@ -131,16 +131,29 @@ export const oauthPendingFlows = pgTable("oauth_pending_flows", {
  * table exists so operator tools can check "does this user own this threadId"
  * before letting them act on it. Full relational claim persistence (matching
  * src/domain/claim/claim.types.ts) is separate, larger future work.
+ *
+ * bookingReference + the (userId, bookingReference) unique constraint are what
+ * make ClaimRepo.findByBookingReference an authoritative identity check —
+ * OperatorTools.startClaim uses it to make a re-check of an already-known
+ * booking always return the EXISTING claim's real stored facts, never a fresh
+ * pipeline run seeded with whatever (possibly wrong) flight/date the LLM
+ * reconstructed this time. The unique constraint is the DB-level backstop for
+ * that same invariant, not just the application-level check-then-create.
  */
-export const claims = pgTable("claims", {
-  id: text("id").primaryKey(), // LangGraph threadId
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  status: text("status").notNull(),
-  createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
-  updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
-});
+export const claims = pgTable(
+  "claims",
+  {
+    id: text("id").primaryKey(), // LangGraph threadId
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    bookingReference: text("booking_reference").notNull(),
+    status: text("status").notNull(),
+    createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+    updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique().on(table.userId, table.bookingReference)],
+);
 
 /**
  * Server-held confirmation gate for irreversible actions (forget_my_data,
@@ -184,4 +197,34 @@ export const conversationMessages = pgTable("conversation_messages", {
   role: text("role").notNull(), // "user" | "assistant"
   content: text("content").notNull(),
   createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Geographic reference facts for airports (great-circle coordinates + which
+ * country they're in) — this is the real data source behind
+ * src/providers/airport-reference/, which is what src/domain/ec261/distance.ts
+ * (compensation distance banding) and eu-membership.ts (route-coverage) are
+ * fed from. Deliberately does NOT store an EU-membership boolean here: this
+ * table holds sourced GEOGRAPHIC facts only (countryIsoCode is just "which
+ * country"), and whether that country counts as "EU" for EC261 purposes is a
+ * legal classification applied in src/domain/ec261/eu-membership.ts — keeping
+ * that judgment out of a data-import table means a bad row here can be
+ * geographically wrong at worst, never silently misjudge the law.
+ *
+ * `source` records how a row got here: "ourairports" for the bulk import
+ * (scripts/import-airports.ts) vs "aeroapi_lookup" for a row filled in live by
+ * the self-healing fallback (src/providers/airport-reference/db.adapter.ts)
+ * when a code was missing from that import — kept for auditability of where a
+ * money-affecting distance figure's underlying coordinates actually came from.
+ */
+export const airports = pgTable("airports", {
+  iataCode: text("iata_code").primaryKey(),
+  icaoCode: text("icao_code").notNull(),
+  name: text("name").notNull(),
+  countryIsoCode: text("country_iso_code").notNull(),
+  latitude: doublePrecision("latitude").notNull(),
+  longitude: doublePrecision("longitude").notNull(),
+  source: text("source").notNull(), // "ourairports" | "aeroapi_lookup"
+  createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
 });

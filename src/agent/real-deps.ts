@@ -2,6 +2,7 @@ import { createFlightStatusProvider } from "../providers/flight-status/index.js"
 import { createWeatherProvider } from "../providers/weather/index.js";
 import { createDisruptionProvider } from "../providers/disruption/index.js";
 import { createAirlineDirectoryProvider } from "../providers/airline-directory/index.js";
+import { createAirportReferenceProvider } from "../providers/airport-reference/index.js";
 import { createEmailSendProvider } from "../providers/email-send/index.js";
 import { createPaymentsProvider } from "../providers/payments/index.js";
 import { createLlmClient } from "./llm/index.js";
@@ -23,6 +24,7 @@ export function createRealGraphDeps(): GraphDeps {
     weather: createWeatherProvider(),
     disruption: createDisruptionProvider(),
     airlineDirectory: createAirlineDirectoryProvider(),
+    airportReference: createAirportReferenceProvider(),
     emailSend: createEmailSendProvider(),
     payments: createPaymentsProvider(),
     llm,

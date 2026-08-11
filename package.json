@@ -23,6 +23,7 @@
     "email:connect": "tsx scripts/connect-email.ts",
     "email:check": "tsx scripts/check-inbox.ts",
     "test-emails:generate": "tsx scripts/generate-test-emails.ts",
+    "airports:import": "tsx scripts/import-airports.ts",
     "chat": "tsx scripts/chat.ts",
     "server": "tsx src/api/server.ts",
     "telegram:setup": "tsx scripts/telegram-setup.ts",

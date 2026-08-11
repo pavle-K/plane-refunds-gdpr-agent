@@ -3,77 +3,114 @@
     "carrierIataCode": "LH",
     "carrierName": "Lufthansa",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A compensation form reportedly exists on lufthansa.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "AF",
     "carrierName": "Air France",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "An \"assistance et indemnisation\" page reportedly exists on airfrance.com, but automated verification timed out (likely a JS-rendered page) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "KL",
     "carrierName": "KLM",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A refund/compensation page reportedly exists on klm.com, but automated verification timed out (likely a JS-rendered page) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "IB",
     "carrierName": "Iberia",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "Relevant claims/help pages reportedly exist on iberia.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "AZ",
     "carrierName": "ITA Airways",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A compensation request form reportedly exists on ita-airways.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "FR",
     "carrierName": "Ryanair",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A dedicated claims subdomain (eu261claims.ryanair.com) is consistently referenced across independent search results, but it refused a direct connection on two separate verification attempts — needs a manual visit to confirm before this can be trusted; do not encode this URL as fact until someone has actually loaded it."
+    }
   },
   {
     "carrierIataCode": "EI",
     "carrierName": "Aer Lingus",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "web_form",
+      "formUrl": "https://www.aerlingus.com/app/support/forms/flight-disruption-compensation-form",
+      "requiredFields": ["fullName", "contactEmail", "phone", "iban"],
+      "formNotes": "Verified via a direct fetch of https://www.aerlingus.com/support/customer-care/requests-and-enquiries/ (2026-08-11), which explicitly states \"If you're looking to submit a claim for EU Regulation 261 then choose from the below options\" and links this exact URL for delay/cancellation compensation. A separate expenses-claim form exists at the same path with /flight-disruption-expenses-form for accommodation/meals/transport costs, not compensation itself. Page states the form asks for booking reference, flight details, passenger name, contact details, and bank account details for payment (plus a letter of authorisation if claiming on someone else's behalf)."
+    }
   },
   {
     "carrierIataCode": "TP",
     "carrierName": "TAP Air Portugal",
     "isEuCarrier": true,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "web_form",
+      "formUrl": "https://www.flytap.com/en_br/help/requests-complaints/complaints",
+      "requiredFields": ["fullName", "iban"],
+      "formNotes": "Verified via a direct fetch of https://www.flytap.com/en-br/help/delays-cancellations (2026-08-11), which links this exact URL with the text \"access our complaints form and request your compensation\" for cancellations/delays over 3 hours. Note this was confirmed via the Brazil-locale (en_br) path specifically — flytap.com serves this same complaints form under other locale prefixes (e.g. en-pt); the underlying form is presumed shared but that wasn't independently confirmed, so re-verify if a different locale's URL is ever preferred. Page states the form asks for passenger name(s), flight number/date/route, ticket number(s), supporting documents, and bank details for payment."
+    }
   },
   {
     "carrierIataCode": "BA",
     "carrierName": "British Airways",
     "isEuCarrier": false,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A claims form and a postal address for EU compensation claims (British Airways Customer Relations, EU Compensation Claims, PO Box 1126, Uxbridge UB8 9XS, UK) are referenced in search results, but ba.com returned only a \"high demand\" holding page on every automated fetch attempt — needs a manual visit to confirm the exact form URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "LX",
     "carrierName": "Swiss International Air Lines",
     "isEuCarrier": false,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "A specifically-named \"Application for compensation in the event of flight irregularities\" form reportedly exists on swiss.com, but automated verification was blocked (HTTP 403) — needs a manual visit to confirm the exact URL before this can be trusted."
+    }
   },
   {
     "carrierIataCode": "TK",
     "carrierName": "Turkish Airlines",
     "isEuCarrier": false,
-    "claimsEmail": "claims@REPLACE-ME.example",
-    "knownRejectionPatterns": []
+    "knownRejectionPatterns": [],
+    "submissionMethod": {
+      "type": "unsupported",
+      "reason": "turkishairlines.com timed out on every automated fetch attempt; no official claims channel could be found — only third-party sources (excluded per policy) surfaced anything, including an unverified email address explicitly not listed as an official complaints channel."
+    }
   }
 ]

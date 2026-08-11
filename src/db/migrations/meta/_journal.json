@@ -43,6 +43,20 @@
       "when": 1786389961524,
       "tag": "0005_exotic_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786440538702,
+      "tag": "0006_brave_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786449226199,
+      "tag": "0007_medical_husk",
+      "breakpoints": true
     }
   ]
 }
