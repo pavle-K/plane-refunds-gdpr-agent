@@ -27,6 +27,10 @@ describe("routeAfterApproval", () => {
     expect(routeAfterApproval(buildState({ claimStatus: "declined" }))).toBe("declined");
     expect(routeAfterApproval(buildState({ claimStatus: "pending_approval" }))).toBe("declined");
   });
+
+  it("never attempts a send for needs_manual_submission (a carrier with no automated send path)", () => {
+    expect(routeAfterApproval(buildState({ claimStatus: "needs_manual_submission" }))).toBe("declined");
+  });
 });
 
 describe("routeAfterAwaitResponse", () => {

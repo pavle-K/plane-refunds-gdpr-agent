@@ -42,6 +42,10 @@ describe("claim state machine — legal transitions", () => {
     expect(applyTransition("rebutting", "DECLINE")).toBe("declined");
   });
 
+  it("allows CANNOT_AUTO_SEND at the approval gate for a carrier with no automated send path", () => {
+    expect(applyTransition("pending_approval", "CANNOT_AUTO_SEND")).toBe("needs_manual_submission");
+  });
+
   it("allows escalation on timeout or on a weak rebuttal case", () => {
     expect(applyTransition("awaiting_response", "TIMEOUT")).toBe("escalated");
     expect(applyTransition("rejected", "ESCALATE")).toBe("escalated");
@@ -59,6 +63,7 @@ describe("claim state machine — illegal transitions", () => {
       "draft",
       "pending_approval",
       "sent",
+      "needs_manual_submission",
       "awaiting_response",
       "rejected",
       "rebutting",
@@ -77,7 +82,7 @@ describe("claim state machine — illegal transitions", () => {
 });
 
 describe("claim state machine — terminal states", () => {
-  it.each(["declined", "escalated", "paid"] as const)(
+  it.each(["declined", "needs_manual_submission", "escalated", "paid"] as const)(
     "accepts no further transitions from %s",
     (status) => {
       expect(isTerminal(status)).toBe(true);
@@ -86,6 +91,7 @@ describe("claim state machine — terminal states", () => {
         "REQUEST_EDIT",
         "DECLINE",
         "SEND",
+        "CANNOT_AUTO_SEND",
         "CONFIRM_DISPATCHED",
         "RECEIVE_REJECTION",
         "RECEIVE_ACCEPTANCE",

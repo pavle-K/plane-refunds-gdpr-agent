@@ -5,7 +5,7 @@ import { createHumanApprovalNode } from "../../../../src/agent/nodes/human-appro
 import { createSendClaimNode } from "../../../../src/agent/nodes/send-claim.node.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { FakeEmailSendAdapter } from "../../../../src/providers/email-send/fake.adapter.js";
-import { StaticAirlineDirectoryAdapter } from "../../../../src/providers/airline-directory/static.adapter.js";
+import { buildAnyCodeEmailAirlineDirectory } from "../../../../src/providers/airline-directory/fake.adapter.js";
 import type { Booking } from "../../../../src/domain/claim/claim.types.js";
 
 /**
@@ -18,7 +18,7 @@ import type { Booking } from "../../../../src/domain/claim/claim.types.js";
 function buildMiniGraph() {
   const auditLog = new FakeAuditLog();
   const emailSend = new FakeEmailSendAdapter();
-  const airlineDirectory = new StaticAirlineDirectoryAdapter();
+  const airlineDirectory = buildAnyCodeEmailAirlineDirectory();
 
   const builder = new StateGraph(GraphState)
     .addNode("humanApproval", createHumanApprovalNode({ auditLog }))
@@ -115,6 +115,52 @@ describe("human-approval node — the mandatory pause before any outbound send",
     const result = await graph.invoke(new Command({ resume: { action: "decline" } }), config);
 
     expect(result.claimStatus).toBe("declined");
+    expect(emailSend.sentEmails).toHaveLength(0);
+  });
+
+  it("approve on a carrier with no automated send path → needs_manual_submission, sendClaim never runs", async () => {
+    const { graph, emailSend } = buildMiniGraph();
+    const config = threadConfig("no-auto-send-1");
+
+    await graph.invoke(
+      {
+        claimId: "c1",
+        claimStatus: "draft",
+        booking: BOOKING,
+        draftText: "Submit it here: https://example-airline.test/claims",
+        submissionWarning: "This airline requires claims to be submitted through their own web form.",
+      },
+      config,
+    );
+    const result = await graph.invoke(new Command({ resume: { action: "approve" } }), config);
+
+    expect(result.claimStatus).toBe("needs_manual_submission");
+    expect(result.approvalDecision).toBe("approved");
+    expect(result.approvedText).toBe("Submit it here: https://example-airline.test/claims");
+    expect(emailSend.sentEmails).toHaveLength(0); // sendClaim was never reached, not just refused
+  });
+
+  it("edit on a carrier with no automated send path also lands on needs_manual_submission", async () => {
+    const { graph, emailSend } = buildMiniGraph();
+    const config = threadConfig("no-auto-send-2");
+
+    await graph.invoke(
+      {
+        claimId: "c1",
+        claimStatus: "draft",
+        booking: BOOKING,
+        draftText: "original packet",
+        submissionWarning: "no automated channel",
+      },
+      config,
+    );
+    const result = await graph.invoke(
+      new Command({ resume: { action: "edit", editedText: "human-edited packet" } }),
+      config,
+    );
+
+    expect(result.claimStatus).toBe("needs_manual_submission");
+    expect(result.approvedText).toBe("human-edited packet");
     expect(emailSend.sentEmails).toHaveLength(0);
   });
 
