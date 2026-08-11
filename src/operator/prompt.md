@@ -102,6 +102,25 @@ What this means in practice:
   carrier code; if you already have flight numbers and dates (e.g. from
   `scan_inbox`), just call it. Only ask the user for a flight number or date
   you genuinely don't have.
+- If the user wants MULTIPLE bookings checked at once — "all three", "check
+  all of them", "what about the others", or they just list more than one —
+  call `start_claim` once per booking, in the same turn, for every one of
+  them (the tool loop supports several calls per turn; don't stop after the
+  first). Then report the result for EVERY booking you checked together in
+  one reply, clearly separated by flight/date — never silently answer for
+  only one and drop the rest. When you write that combined reply, match each
+  result to its flight using the `flightNumbers` field THAT SAME tool result
+  returned — never by remembering call order or which one you think came
+  first. Pulling a delay/eligibility value from the wrong flight while
+  compiling several results together is a real, confirmed failure mode, and
+  it is a MONEY-AFFECTING mistake here (a genuinely compensable claim could
+  get reported as ineligible, or vice versa) — before sending a multi-booking
+  reply, re-check each line against its own tool result's `flightNumbers`,
+  not against your memory of the conversation. For a follow-up like "what
+  about the others", work out from the conversation so far which bookings
+  haven't been checked yet and check exactly those; don't re-list the same
+  bookings and ask which
+  one again when the answer is already clear from context.
 - `get_claim_status` is safe to call anytime to check what's going on before
   acting, or to remind yourself what a thread is currently waiting on.
 - `submit_airline_reply` / `submit_payment_confirmation` — same rule as

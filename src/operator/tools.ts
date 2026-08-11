@@ -583,7 +583,20 @@ export class OperatorTools {
     )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(threadId, result);
 
-    return { threadId, ...this.summarize(result) };
+    // flightNumbers/bookingReference are echoed back deliberately: when the
+    // model checks several bookings in one turn (see prompt.md), each tool
+    // result must be self-labeled with which flight it's about. Without
+    // this, the model has to correlate results back to flights purely from
+    // memory/call-order across several tool responses — a real incident
+    // showed it can misattribute one flight's delay/eligibility onto
+    // another when composing a combined summary. This doesn't make that
+    // impossible, but it removes the need to rely on memory for it.
+    return {
+      threadId,
+      flightNumbers: input.segments.map((s) => s.flightNumber),
+      bookingReference: booking.bookingReference,
+      ...this.summarize(result),
+    };
   }
 
   private async submitApprovalDecision(input: ApprovalInput) {
