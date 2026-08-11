@@ -16,6 +16,7 @@ export function buildState(overrides: Partial<GraphStateType> = {}): GraphStateT
     disruptionEvents: [],
     score: null,
     draftText: null,
+    submissionWarning: null,
     approvalDecision: null,
     approvedText: null,
     sendReceipt: null,

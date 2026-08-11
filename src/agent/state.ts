@@ -59,6 +59,12 @@ export const GraphState = Annotation.Root({
   score: Annotation<ClaimScore | null>(overwrite<ClaimScore | null>(null)),
 
   draftText: Annotation<string | null>(overwrite<string | null>(null)),
+  /** Non-null when the operating carrier's ClaimSubmissionMethod isn't
+   * "email" (web_form, unsupported, or no directory entry at all) — set by
+   * draftClaim so the operator can tell the human BEFORE asking for approval
+   * that this claim currently has no automated send path. sendClaim enforces
+   * the actual refusal independently; this is purely informational. */
+  submissionWarning: Annotation<string | null>(overwrite<string | null>(null)),
   approvalDecision: Annotation<ApprovalDecision | null>(overwrite<ApprovalDecision | null>(null)),
   approvedText: Annotation<string | null>(overwrite<string | null>(null)),
 
