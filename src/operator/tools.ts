@@ -19,8 +19,12 @@ import type { Booking } from "../domain/claim/claim.types.js";
 /** Claim statuses that mean nothing was ever actually sent to an airline —
  * safe to fully delete on a forget_my_data request. Everything else (sent
  * and beyond) is a real transaction/correspondence, kept for the legal-claims
- * and financial record-keeping reasons GDPR Art. 17(3) allows for. */
-const PRE_SEND_CLAIM_STATUSES = new Set(["draft", "pending_approval", "declined"]);
+ * and financial record-keeping reasons GDPR Art. 17(3) allows for.
+ * "needs_manual_submission" belongs here too: it means the carrier has no
+ * automated send path, so THIS SYSTEM never dispatched anything — the human
+ * may have gone and submitted it themselves elsewhere, but that's outside
+ * this app's own transaction record (see human-approval.node.ts). */
+const PRE_SEND_CLAIM_STATUSES = new Set(["draft", "pending_approval", "declined", "needs_manual_submission"]);
 
 /** How long a forget_my_data/disconnect_email confirmation request stays
  * live — short on purpose: this only ever needs to survive to the very next
@@ -142,6 +146,15 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
       type: "object",
       properties: { threadId: { type: "string", description: "Omit to use the most recently started/touched claim." } },
     },
+  },
+  {
+    name: "list_supported_airlines",
+    description:
+      "Returns every airline this system knows about and how (if at all) a claim can currently be submitted to " +
+      "it — email, their own web form, or not yet supported, with why. This is the ONLY correct way to answer a " +
+      "general question like 'which airlines can you send to automatically' or 'what about Lufthansa/Ryanair/etc' " +
+      "— never answer that kind of question from memory or a guess; call this and relay exactly what it returns.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "submit_airline_reply",
@@ -270,6 +283,8 @@ export class OperatorTools {
         return this.submitApprovalDecision(input as unknown as ApprovalInput);
       case "get_claim_status":
         return this.getClaimStatus(input["threadId"] as string | undefined);
+      case "list_supported_airlines":
+        return this.listSupportedAirlines();
       case "submit_airline_reply":
         return this.submitAirlineReply(input["threadId"] as string | undefined, input["replyText"] as string | undefined);
       case "submit_payment_confirmation":
@@ -553,16 +568,45 @@ export class OperatorTools {
       return { error: "start_claim requires at least one segment." };
     }
 
+    const bookingReference = input.bookingReference ?? `CHAT-${Date.now()}`;
+
+    // A booking reference this user has already checked is authoritative —
+    // never trust the model to re-derive flight/date facts it already
+    // extracted once. This is the fix for a real incident: asked to
+    // "check the ryanair one" again, the model silently re-called this with
+    // today's date instead of the flight's actual date, got a genuine "not
+    // found" for that wrong date, and then fabricated an answer to paper
+    // over the contradiction rather than admit it. Returning the EXISTING
+    // claim's real stored result — ignoring whatever this call's inputs are —
+    // makes that entire failure mode structurally impossible: the system,
+    // not the model's memory, decides what "the ryanair one" actually is.
+    const existing = await this.claimRepo.findByBookingReference(this.userId, bookingReference);
+    if (existing) {
+      const state = await this.graph.getState(this.config(existing.id));
+      return {
+        threadId: existing.id,
+        flightNumbers: input.segments.map((s) => s.flightNumber),
+        bookingReference,
+        recheckedExistingClaim: true,
+        note:
+          "This booking reference was already checked in a previous call — returning that SAME claim's real " +
+          "stored result. The flight/date given in this call were ignored; they cannot change what's already on " +
+          "record for this booking. If something here looks different from what you expected, trust this, not " +
+          "your memory of the earlier turn.",
+        ...this.summarize(state.values as unknown as Record<string, unknown>),
+      };
+    }
+
     const threadId = `claim-${Date.now()}`;
     // Recorded before graph.invoke, not after — if invoke fails partway, an
     // orphan ownership row pointing at a thread that never actually started
     // is harmless; the reverse (a thread that exists in the checkpointer with
     // no ownership row) would permanently lock its own creator out of it via
     // resolveThreadId's ownership check.
-    await this.claimRepo.create(threadId, this.userId, "draft");
+    await this.claimRepo.create(threadId, this.userId, bookingReference, "draft");
 
     const booking: Booking = {
-      bookingReference: input.bookingReference ?? `CHAT-${Date.now()}`,
+      bookingReference,
       passengers: [{ id: "passenger-1", fullName: input.passengerFullName ?? "Unknown Passenger", email: "" }],
       segments: input.segments.map((s) => ({
         flightNumber: s.flightNumber,
@@ -627,9 +671,36 @@ export class OperatorTools {
       threadId: id,
       claimStatus: state.values.claimStatus,
       pausedOn: state.next[0] ?? null,
+      eligible: state.values.eligible,
+      eligibilityReason: state.values.eligibilityReason,
+      compensationCents: state.values.compensationCents,
       draftText: state.values.draftText,
+      submissionWarning: state.values.submissionWarning,
       escalationReason: state.values.escalationReason,
       payout: state.values.payout,
+    };
+  }
+
+  /** Grounds a general "which airlines support what" question in the real
+   * directory data instead of the model guessing — see this tool's
+   * description in TOOL_DEFINITIONS for why that matters. */
+  private async listSupportedAirlines() {
+    const airlines = await this.deps.airlineDirectory.listAirlines();
+    return {
+      airlines: airlines
+        .map((a) => ({
+          carrierIataCode: a.carrierIataCode,
+          carrierName: a.carrierName,
+          canAutoSend: a.submissionMethod.type === "email",
+          submissionMethodType: a.submissionMethod.type,
+          note:
+            a.submissionMethod.type === "email"
+              ? null
+              : a.submissionMethod.type === "web_form"
+                ? `Requires manual submission via their web form (${a.submissionMethod.formUrl}) — not automated yet.`
+                : a.submissionMethod.reason,
+        }))
+        .sort((a, b) => a.carrierName.localeCompare(b.carrierName)),
     };
   }
 
@@ -663,6 +734,7 @@ export class OperatorTools {
       eligibilityReason: result["eligibilityReason"],
       compensationCents: result["compensationCents"],
       draftText: result["draftText"],
+      submissionWarning: result["submissionWarning"],
       pausedOn: result["__interrupt__"] ? "waiting for input — describe what's needed based on claimStatus" : null,
       escalationReason: result["escalationReason"],
       payout: result["payout"],

@@ -98,7 +98,7 @@ describe.skipIf(!canRun)("disconnect_email / forget_my_data — request phase (d
     await new ConversationRepo().appendTurn(channelIdentityId, "user", "hello");
 
     const draftClaimId = `claim-${randomUUID()}`;
-    await new ClaimRepo().create(draftClaimId, userId, "draft");
+    await new ClaimRepo().create(draftClaimId, userId, draftClaimId, "draft");
 
     const result = (await tools.dispatch("forget_my_data", {})) as { status: string; confirmationPrompt: string };
 
@@ -228,9 +228,9 @@ describe.skipIf(!canRun)("forget_my_data — execution phase (executeConfirmedAc
     await conversationRepo.appendTurn(channelIdentityId, "assistant", "hi there");
 
     const draftClaimId = `claim-${randomUUID()}`;
-    await claimRepo.create(draftClaimId, userId, "draft");
+    await claimRepo.create(draftClaimId, userId, draftClaimId, "draft");
     const sentClaimId = `claim-${randomUUID()}`;
-    await claimRepo.create(sentClaimId, userId, "draft");
+    await claimRepo.create(sentClaimId, userId, sentClaimId, "draft");
     await claimRepo.updateStatus(sentClaimId, "sent");
 
     const result = (await tools.executeConfirmedAction("forget_my_data", {})) as {
@@ -268,20 +268,28 @@ describe.skipIf(!canRun)("forget_my_data — execution phase (executeConfirmedAc
     const postSendIds: string[] = [];
     for (const status of postSendStatuses) {
       const id = `claim-${randomUUID()}`;
-      await claimRepo.create(id, userId, "draft");
+      await claimRepo.create(id, userId, id, "draft");
       await claimRepo.updateStatus(id, status);
       postSendIds.push(id);
     }
     const declinedId = `claim-${randomUUID()}`;
-    await claimRepo.create(declinedId, userId, "draft");
+    await claimRepo.create(declinedId, userId, declinedId, "draft");
     await claimRepo.updateStatus(declinedId, "declined");
 
+    // Pre-send in spirit even though it's a graph-terminal status: this system
+    // never actually dispatched anything to the airline for this carrier — see
+    // tools.ts's PRE_SEND_CLAIM_STATUSES doc comment.
+    const needsManualSubmissionId = `claim-${randomUUID()}`;
+    await claimRepo.create(needsManualSubmissionId, userId, needsManualSubmissionId, "draft");
+    await claimRepo.updateStatus(needsManualSubmissionId, "needs_manual_submission");
+
     const result = (await tools.executeConfirmedAction("forget_my_data", {})) as { deletedClaimCount: number };
-    expect(result.deletedClaimCount).toBe(1); // only the declined one
+    expect(result.deletedClaimCount).toBe(2); // declined + needs_manual_submission
 
     for (const id of postSendIds) {
       expect(await claimRepo.findById(id)).not.toBeNull();
     }
+    expect(await claimRepo.findById(needsManualSubmissionId)).toBeNull();
     expect(await claimRepo.findById(declinedId)).toBeNull();
   });
 });

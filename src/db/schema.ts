@@ -131,16 +131,29 @@ export const oauthPendingFlows = pgTable("oauth_pending_flows", {
  * table exists so operator tools can check "does this user own this threadId"
  * before letting them act on it. Full relational claim persistence (matching
  * src/domain/claim/claim.types.ts) is separate, larger future work.
+ *
+ * bookingReference + the (userId, bookingReference) unique constraint are what
+ * make ClaimRepo.findByBookingReference an authoritative identity check —
+ * OperatorTools.startClaim uses it to make a re-check of an already-known
+ * booking always return the EXISTING claim's real stored facts, never a fresh
+ * pipeline run seeded with whatever (possibly wrong) flight/date the LLM
+ * reconstructed this time. The unique constraint is the DB-level backstop for
+ * that same invariant, not just the application-level check-then-create.
  */
-export const claims = pgTable("claims", {
-  id: text("id").primaryKey(), // LangGraph threadId
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  status: text("status").notNull(),
-  createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
-  updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
-});
+export const claims = pgTable(
+  "claims",
+  {
+    id: text("id").primaryKey(), // LangGraph threadId
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    bookingReference: text("booking_reference").notNull(),
+    status: text("status").notNull(),
+    createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+    updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique().on(table.userId, table.bookingReference)],
+);
 
 /**
  * Server-held confirmation gate for irreversible actions (forget_my_data,

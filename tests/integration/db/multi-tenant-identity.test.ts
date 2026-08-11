@@ -136,8 +136,8 @@ describe.skipIf(!canRun)("multi-tenant identity & ownership schema (real Postgre
     const olderThreadId = `claim-${randomUUID()}`;
     const newerThreadId = `claim-${randomUUID()}`;
 
-    await claimRepo.create(olderThreadId, userId, "draft");
-    await claimRepo.create(newerThreadId, userId, "draft");
+    await claimRepo.create(olderThreadId, userId, olderThreadId, "draft");
+    await claimRepo.create(newerThreadId, userId, newerThreadId, "draft");
     await claimRepo.updateStatus(newerThreadId, "pending_approval");
 
     const mostRecent = await claimRepo.findMostRecentForUser(userId);
