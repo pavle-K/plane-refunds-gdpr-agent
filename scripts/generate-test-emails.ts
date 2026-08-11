@@ -39,10 +39,10 @@
  * Usage (fully automatic — finds eligible/ineligible/no-disruption examples and mails yourself):
  *   npx tsx scripts/generate-test-emails.ts
  *
- * Usage (a specific known flight, or a non-default recipient/airport/budget):
+ * Usage (a specific known flight, or a non-default recipient/airport):
  *   npx tsx scripts/generate-test-emails.ts \
  *     [--flight BA123 --date 2026-08-03] [--to you@gmail.com] \
- *     [--airport LHR] [--lookback-days 7] [--max-lookups 40] \
+ *     [--airport LHR] [--lookback-days 7] \
  *     [--passenger "Test Passenger"] [--carrier "British Airways"]
  */
 import nodemailer, { type Transporter } from "nodemailer";
@@ -50,7 +50,12 @@ import { randomBytes } from "node:crypto";
 import { env } from "../src/config/env.js";
 import { AeroApiFlightStatusAdapter } from "../src/providers/flight-status/aeroapi.adapter.js";
 import type { FlightStatusResult } from "../src/providers/flight-status/flight-status.port.js";
-import { findTestFlightSet, describeRealEligibility, type TestFlightCase } from "./lib/find-real-flight.js";
+import {
+  findTestFlightSet,
+  describeRealEligibility,
+  DEFAULT_TARGET_CASES,
+  type TestFlightCase,
+} from "./lib/find-real-flight.js";
 import { createAirlineDirectoryProvider } from "../src/providers/airline-directory/index.js";
 
 function getArg(name: string): string | undefined {
@@ -184,13 +189,12 @@ async function main() {
     const found = await findTestFlightSet(flightStatusAdapter, env.FLIGHT_DATA_API_KEY, {
       ...(airportArg ? { airports: [airportArg] } : {}),
       lookbackDays: Number(getArg("lookback-days") ?? "7"),
-      maxLookups: Number(getArg("max-lookups") ?? "40"),
     });
 
     if (found.length === 0) {
       console.error(
         "\nFAILED to find any real flight in the searched airports/window.\n" +
-          "Try a wider --lookback-days, a different --airport, a higher --max-lookups, " +
+          "Try a wider --lookback-days, a different --airport, " +
           "or pass a specific --flight/--date you already know about.",
       );
       process.exit(1);
@@ -206,6 +210,15 @@ async function main() {
         eligibility,
         referencePrefix: CASE_REFERENCE_PREFIX[testCase],
       });
+    }
+
+    const foundCases = new Set(found.map((f) => f.testCase));
+    const missing = DEFAULT_TARGET_CASES.filter((c) => !foundCases.has(c));
+    if (missing.length > 0) {
+      console.log(
+        `\nNote: sent ${found.length} of ${DEFAULT_TARGET_CASES.length} target cases — missing: ${missing.join(", ")}. ` +
+          "See the search warnings above for why (likely AeroAPI rate-limiting); re-run later to try to fill the rest.",
+      );
     }
   }
 
