@@ -22,7 +22,7 @@ function buildMiniGraph() {
 
   const builder = new StateGraph(GraphState)
     .addNode("humanApproval", createHumanApprovalNode({ auditLog }))
-    .addNode("sendClaim", createSendClaimNode({ emailSend, airlineDirectory, auditLog }))
+    .addNode("sendClaim", createSendClaimNode({ emailSend, airlineDirectory, auditLog, fromAddress: "claims@refunds.test" }))
     .addEdge(START, "humanApproval")
     .addConditionalEdges(
       "humanApproval",

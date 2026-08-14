@@ -185,7 +185,7 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       evidence: {
         weatherObservation: state.weatherObservation,
         disruptionEvents: state.disruptionEvents,
-        extraordinaryVerdict: state.extraordinaryVerdict,
+        extraordinaryCircumstanceVerdict: state.extraordinaryVerdict,
       },
     };
 
@@ -196,7 +196,7 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
           counterEvidence: {
             weatherObservation: state.weatherObservation,
             disruptionEvents: state.disruptionEvents,
-            extraordinaryVerdict: state.extraordinaryVerdict,
+            extraordinaryCircumstanceVerdict: state.extraordinaryVerdict,
           },
         }
       : basePayload;

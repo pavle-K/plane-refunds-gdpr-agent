@@ -20,7 +20,6 @@ You will be given, as fixed facts (never recompute or contradict these):
   cause code reported.
 - Evidence bundle: weather observation and/or disruption events near the time of
   the flight, if any were found.
-- The airline's historical rejection patterns for this carrier, if known.
 
 ## Output
 

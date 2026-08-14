@@ -129,6 +129,30 @@ export function createCheckEligibilityNode(deps: CheckEligibilityNodeDeps) {
           )
         : null;
 
+    // "Eligible, amount unknown" cannot continue: draftClaim requires a
+    // compensationCents and used to throw an opaque error several nodes later
+    // when it got null here. That's reachable — an unresolvable DEPARTURE
+    // airport leaves compensationCents null while eligibility can still come
+    // out true on arrival-side coverage (EU arrival + EU carrier). Short-circuit
+    // with the reason named, matching how this node already handles an unknown
+    // cancellation notice period: an unresolvable input surfaces as a stated
+    // manual-review reason, never as a crash and never as a guessed amount.
+    if (eligibility.eligible && compensationCents === null) {
+      const unresolved = [
+        ...(departureAirportResult.ok ? [] : [firstSegment.departureAirportIata]),
+        ...(arrivalAirportResult.ok ? [] : [lastSegment.arrivalAirportIata]),
+      ].join(", ");
+      return {
+        flightStatuses,
+        eligible: false,
+        eligibilityReason:
+          `This flight appears to qualify (${eligibility.reason}), but the compensation amount can't be ` +
+          `computed: no airport reference data for ${unresolved}, so the route distance is unknown. ` +
+          "Needs manual review — the amount must not be guessed.",
+        compensationCents: null,
+      };
+    }
+
     return {
       flightStatuses,
       eligible: eligibility.eligible,

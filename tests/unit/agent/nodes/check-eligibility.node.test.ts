@@ -68,6 +68,34 @@ describe("check-eligibility node", () => {
     expect(result.compensationCents).toBe(60000); // CDG-JFK is long-haul
   });
 
+  it("does not pass on an eligible claim whose compensation amount can't be computed", async () => {
+    const deps = buildDeps();
+    // Departure airport is unknown to the reference provider, so the route
+    // distance — and therefore the amount — can't be computed. Arrival is EU
+    // and the operating carrier is EU, so eligibility itself still comes out
+    // true; without the short-circuit this reached draftClaim and threw there.
+    deps.flightStatus.seed(
+      QUERY,
+      ok(
+        buildOnTimeResult({
+          operatingCarrierIataCode: "AF",
+          departureAirportIata: "ZZZ",
+          arrivalAirportIata: "CDG",
+          status: "delayed",
+          delayMinutesAtArrival: 220,
+        }),
+      ),
+    );
+    const node = createCheckEligibilityNode(deps);
+
+    const result = await node(buildState({ booking: BOOKING }));
+
+    expect(result.eligible).toBe(false);
+    expect(result.compensationCents).toBeNull();
+    expect(result.eligibilityReason).toContain("ZZZ");
+    expect(result.eligibilityReason).toContain("Needs manual review");
+  });
+
   it("marks an on-time flight ineligible without calling domain eligibility on nonsense input", async () => {
     const deps = buildDeps();
     deps.flightStatus.seed(QUERY, ok(buildOnTimeResult({ status: "on_time" })));

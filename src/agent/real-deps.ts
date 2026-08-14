@@ -8,6 +8,7 @@ import { createPaymentsProvider } from "../providers/payments/index.js";
 import { createLlmClient } from "./llm/index.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
+import { env } from "../config/env.js";
 import type { GraphDeps } from "./graph.js";
 
 /**
@@ -26,6 +27,7 @@ export function createRealGraphDeps(): GraphDeps {
     airlineDirectory: createAirlineDirectoryProvider(),
     airportReference: createAirportReferenceProvider(),
     emailSend: createEmailSendProvider(),
+    ...(env.CLAIM_SENDER_EMAIL ? { fromAddress: env.CLAIM_SENDER_EMAIL } : {}),
     payments: createPaymentsProvider(),
     llm,
     auditLog: new DbAuditLog(),
