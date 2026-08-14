@@ -1,4 +1,4 @@
-import { ok, err, type Result } from "../../lib/result.js";
+import { err, type Result } from "../../lib/result.js";
 import type { AirportReferenceProvider, AirportFacts, AirportReferenceError } from "./airport-reference.port.js";
 
 /** In-memory adapter for tests and local dev. Seed it, never hits the network or a database. */

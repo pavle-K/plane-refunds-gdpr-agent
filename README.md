@@ -104,7 +104,7 @@ src/
                    #   provider has a fake adapter used in every test — nothing
                    #   in the test suite hits a live API or sends a real email.
     flight-status/ weather/ disruption/ email-ingest/ email-send/
-    airline-directory/ payments/
+    airline-directory/ airport-reference/ payments/
   agent/
     graph.ts       # node/edge wiring only — no business logic
     state.ts       # LangGraph state channels

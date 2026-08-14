@@ -42,9 +42,16 @@ const envSchema = z.object({
   OPENAI_COMPATIBLE_MODEL: z.string().min(1).optional(),
 
   // Required starting Stage 1 (data providers). Optional for now.
+  // No WEATHER_API_KEY: the weather provider is the IEM ASOS archive, which is
+  // free and keyless (see src/providers/weather/index.ts).
   FLIGHT_DATA_API_KEY: z.string().min(1).optional(),
-  WEATHER_API_KEY: z.string().min(1).optional(),
   POSTMARK_API_KEY: z.string().min(1).optional(),
+
+  // The From: address outbound claim letters are sent from. Must be an address
+  // on a domain this project actually controls and has verified with the email
+  // provider — sendClaim refuses to send at all without it rather than falling
+  // back to a placeholder (see src/agent/nodes/send-claim.node.ts).
+  CLAIM_SENDER_EMAIL: z.string().email().optional(),
 
   // Gmail/Outlook OAuth apps — each registered separately (see scripts/connect-email.ts).
   GMAIL_OAUTH_CLIENT_ID: z.string().min(1).optional(),

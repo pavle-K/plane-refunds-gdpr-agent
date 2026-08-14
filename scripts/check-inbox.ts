@@ -7,7 +7,7 @@
  * Usage: npx tsx scripts/check-inbox.ts [--days 90]
  *        npx tsx scripts/check-inbox.ts --start 2024-02-01 --end 2024-03-31
  */
-import { createEmailIngestProvider } from "../src/providers/email-ingest/index.js";
+import { createEmailIngestProvider, FakeEmailIngestAdapter } from "../src/providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../src/providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
 import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
@@ -44,8 +44,12 @@ async function main() {
 
   const provider = await createEmailIngestProvider(userId);
   console.log(`Using: ${provider.constructor.name}`);
-  if (provider.constructor.name === "FakeEmailIngestAdapter") {
-    console.log("No real inbox connected — run `npm run email:connect -- gmail` (or outlook) first.");
+  if (provider instanceof FakeEmailIngestAdapter) {
+    console.log(
+      "No real inbox connected — run `npm run email:connect -- gmail` (or outlook) first. " +
+        "(If one is already connected, check that TOKEN_ENCRYPTION_KEY is set — without it stored " +
+        "mailbox credentials can't be read and this falls back to the fake adapter.)",
+    );
     await pool.end();
     return;
   }

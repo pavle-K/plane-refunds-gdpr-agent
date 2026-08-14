@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Command } from "@langchain/langgraph";
 import type { LlmToolDefinition } from "../agent/llm/index.js";
 import { buildGraph } from "../agent/graph.js";
@@ -11,7 +12,7 @@ import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { ConsentRepo } from "../db/repositories/consent.repo.js";
 import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repositories/pending-confirmation.repo.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
-import { createEmailIngestProvider } from "../providers/email-ingest/index.js";
+import { createEmailIngestProvider, FakeEmailIngestAdapter } from "../providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import type { Booking } from "../domain/claim/claim.types.js";
@@ -523,8 +524,21 @@ export class OperatorTools {
 
   private async scanInbox(input: ScanInboxInput) {
     const provider = await createEmailIngestProvider(this.userId);
-    if (provider.constructor.name === "FakeEmailIngestAdapter") {
-      return { error: "No inbox connected — call connect_email first." };
+    // instanceof, not a constructor.name string compare: the name check was
+    // silently dependent on class names surviving the build, and any bundler
+    // that mangles them would have turned "no inbox connected" into a live
+    // scan against a fake provider.
+    if (provider instanceof FakeEmailIngestAdapter) {
+      // The factory also falls back to the fake when TOKEN_ENCRYPTION_KEY is
+      // unset (see email-ingest/index.ts), which connect_email cannot fix —
+      // so the message names both causes rather than sending the user round a
+      // loop that can't succeed.
+      return {
+        error:
+          "No inbox is connected for this user — call connect_email first. (If the user has already " +
+          "connected one, this server is missing its TOKEN_ENCRYPTION_KEY configuration and cannot read " +
+          "stored mailbox credentials; that's an operator-side problem the user cannot fix by reconnecting.)",
+      };
     }
 
     const sinceUtc = input.startDate
@@ -568,7 +582,14 @@ export class OperatorTools {
       return { error: "start_claim requires at least one segment." };
     }
 
-    const bookingReference = input.bookingReference ?? `CHAT-${Date.now()}`;
+    // randomUUID, not Date.now(): bookingReference is UNIQUE per user (see
+    // schema.ts + migration 0007), and prompt.md explicitly tells the model to
+    // call start_claim once per booking IN THE SAME TURN when several are
+    // checked together. Millisecond resolution is not enough to keep those
+    // apart — two references generated in the same millisecond would either
+    // collide on the unique index or, worse, make the second booking look like
+    // a re-check of the first and return the WRONG claim's stored result.
+    const bookingReference = input.bookingReference ?? `CHAT-${randomUUID()}`;
 
     // A booking reference this user has already checked is authoritative —
     // never trust the model to re-derive flight/date facts it already
@@ -597,7 +618,10 @@ export class OperatorTools {
       };
     }
 
-    const threadId = `claim-${Date.now()}`;
+    // Same reason as bookingReference above — this is the claims table's primary
+    // key, and `claim-${Date.now()}` collided on claims_pkey whenever two claims
+    // started within the same millisecond.
+    const threadId = `claim-${randomUUID()}`;
     // Recorded before graph.invoke, not after — if invoke fails partway, an
     // orphan ownership row pointing at a thread that never actually started
     // is harmless; the reverse (a thread that exists in the checkpointer with
@@ -670,6 +694,11 @@ export class OperatorTools {
     return {
       threadId: id,
       claimStatus: state.values.claimStatus,
+      // awaitingInput has the same meaning and shape here as in summarize()
+      // below, so both tool surfaces answer "is this waiting on someone?" the
+      // same way. pausedOn additionally names the node, which is only knowable
+      // from a checkpoint read like this one.
+      awaitingInput: state.next.length > 0,
       pausedOn: state.next[0] ?? null,
       eligible: state.values.eligible,
       eligibilityReason: state.values.eligibilityReason,
@@ -735,7 +764,11 @@ export class OperatorTools {
       compensationCents: result["compensationCents"],
       draftText: result["draftText"],
       submissionWarning: result["submissionWarning"],
-      pausedOn: result["__interrupt__"] ? "waiting for input — describe what's needed based on claimStatus" : null,
+      // A plain boolean, not a sentence: this used to return prose under the
+      // same `pausedOn` key that get_claim_status returns a NODE NAME under,
+      // so one field name carried two incompatible shapes across tool results.
+      // What it's waiting for is already derivable from claimStatus.
+      awaitingInput: Boolean(result["__interrupt__"]),
       escalationReason: result["escalationReason"],
       payout: result["payout"],
     };

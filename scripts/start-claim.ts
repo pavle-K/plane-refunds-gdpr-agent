@@ -15,11 +15,15 @@
  * key set, the actual flight's status is looked up instead and these are
  * ignored for that purpose (still used to build the booking object).
  *
- * IMPORTANT: airline-directory claims emails are still placeholders
- * (REPLACE-ME.example) — even with a real POSTMARK_API_KEY, approving will send
- * to a fake address until src/providers/airline-directory/data/airlines.json is
- * updated with a real, sourced claims address for the carrier under test.
+ * IMPORTANT: no carrier in src/providers/airline-directory/data/airlines.json
+ * currently has an "email" submission method — every entry is web_form or
+ * unsupported, deliberately, because nothing else has been sourced and verified
+ * (see that file and airline-directory.port.ts). So even with a real
+ * POSTMARK_API_KEY, approving here resolves to "needs_manual_submission" and
+ * sends nothing; sendClaim is only reached once a carrier has a verified
+ * claims email.
  */
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { Command } from "@langchain/langgraph";
 import { buildGraph } from "../src/agent/graph.js";
@@ -123,7 +127,7 @@ async function main() {
   };
 
   const graph = buildGraph(deps);
-  const threadId = `claim-${Date.now()}`;
+  const threadId = `claim-${randomUUID()}`;
   const config = { configurable: { thread_id: threadId } };
 
   console.log(`\n2. Running ingest → eligibility → score → draft (thread: ${threadId})...`);

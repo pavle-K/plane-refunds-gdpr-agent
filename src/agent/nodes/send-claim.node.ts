@@ -7,7 +7,11 @@ export interface SendClaimNodeDeps {
   emailSend: EmailSendProvider;
   airlineDirectory: AirlineDirectoryProvider;
   auditLog: AuditLog;
-  /** Sender address for outbound claims — TODO: real sending domain once configured. */
+  /** Sender address for outbound claims, from CLAIM_SENDER_EMAIL (see
+   * src/agent/real-deps.ts). Optional on the type so tests and the fake-wired
+   * scripts can construct deps without it — but a send with no configured
+   * sender is refused outright rather than defaulted, see
+   * MissingSenderAddressError. */
   fromAddress?: string;
 }
 
@@ -15,6 +19,20 @@ export class ClaimNotApprovedError extends Error {
   constructor(status: string) {
     super(`sendClaim refused: claim status is "${status}", not "sent" (approval gate not passed)`);
     this.name = "ClaimNotApprovedError";
+  }
+}
+
+/**
+ * There used to be a hardcoded "claims@example.com" fallback here. A claim
+ * letter is a legal document; sending one from an address this project doesn't
+ * own means the airline's reply goes nowhere and the passenger has no record of
+ * having filed — a silent, hard-to-detect failure. Refusing is strictly better
+ * than a placeholder that looks like it worked. Set CLAIM_SENDER_EMAIL.
+ */
+export class MissingSenderAddressError extends Error {
+  constructor() {
+    super("sendClaim refused: no sender address configured (set CLAIM_SENDER_EMAIL).");
+    this.name = "MissingSenderAddressError";
   }
 }
 
@@ -65,9 +83,22 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
       throw new Error("sendClaim: booking has no segments");
     }
 
-    const airlineResult = await deps.airlineDirectory.getAirline(lastSegment.operatingCarrierCode);
+    // Prefer the carrier the flight-status lookup actually reported, falling
+    // back to the booking's own code only when no status was resolved. This
+    // MUST match what check-eligibility.node.ts and draft-claim.node.ts used —
+    // they both read flightStatuses[last].operatingCarrierIataCode, while the
+    // booking's operatingCarrierCode is often just the flight number's 2-letter
+    // prefix (see OperatorTools.startClaim). On a codeshare those disagree
+    // (BA1234 operated by Iberia: AeroAPI reports "IB", the prefix says "BA"),
+    // and disagreeing here meant draftClaim could compute submissionWarning for
+    // one carrier while this node resolved a different one — reopening the
+    // "status says sent but nothing was dispatched" bug from the other side.
+    const lastFlightStatus = state.flightStatuses[state.flightStatuses.length - 1];
+    const carrierCode = lastFlightStatus?.operatingCarrierIataCode ?? lastSegment.operatingCarrierCode;
+
+    const airlineResult = await deps.airlineDirectory.getAirline(carrierCode);
     if (!airlineResult.ok) {
-      throw new Error(`sendClaim: no airline directory entry for ${lastSegment.operatingCarrierCode}`);
+      throw new Error(`sendClaim: no airline directory entry for ${carrierCode}`);
     }
 
     const { submissionMethod, carrierName } = airlineResult.value;
@@ -75,10 +106,14 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
       throw new ClaimSubmissionNotAutomatedError(carrierName, submissionMethod);
     }
 
+    if (!deps.fromAddress) {
+      throw new MissingSenderAddressError();
+    }
+
     const flightNumbers = state.booking.segments.map((s) => s.flightNumber).join("/");
     const result = await deps.emailSend.send({
       to: submissionMethod.claimsEmail,
-      from: deps.fromAddress ?? "claims@example.com",
+      from: deps.fromAddress,
       subject: `EC261 Compensation Claim — ${flightNumbers} — ${state.booking.bookingReference}`,
       textBody: state.approvedText,
     });

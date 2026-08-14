@@ -101,6 +101,10 @@ async function main() {
     airlineDirectory: buildAnyCodeEmailAirlineDirectory(),
     airportReference,
     emailSend,
+    // Sandboxed sender: emailSend is the fake adapter, which records instead of
+    // sending, so nothing leaves the machine. sendClaim refuses outright without
+    // a configured sender (see MissingSenderAddressError), so one is required here.
+    fromAddress: "claims@verify.invalid",
     payments,
     llm,
     auditLog: new DbAuditLog(),
