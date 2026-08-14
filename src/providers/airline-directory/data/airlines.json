@@ -3,114 +3,379 @@
     "carrierIataCode": "LH",
     "carrierName": "Lufthansa",
     "isEuCarrier": true,
+    "thirdPartySubmission": "requires_authorization",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A compensation form reportedly exists on lufthansa.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "urlTemplate": "https://www.lufthansa.com/{market}/{lang}/compensation-in-the-event-of-flight-irregularities",
+        "urlTemplateValues": { "market": "mk", "lang": "en" },
+        "requiredFields": [
+          "irregularityType",
+          "claimantRelationship",
+          "flightSegments",
+          "onwardTravelMethod",
+          "passengerNames",
+          "contactDetails",
+          "expenseReceipts",
+          "expenseCurrency"
+        ],
+        "guidance": [
+          "One form covers delay, cancellation, diversion, missed connection, denied boarding and downgrade.",
+          "You can include up to 6 flights and 6 passengers in a single submission.",
+          "Out-of-pocket expenses go through this same form, so there is no need to file those separately.",
+          "Do not enter card details anywhere on it — the form itself warns against that."
+        ],
+        "research": "Server-rendered form; full field list readable without JS. Handles delay / cancellation / diversion / missed connection / denied boarding / downgrade. Accepts up to 6 flight segments and 6 passengers per submission. Third-party claims require an uploaded signed authorisation, submitted under 'Receipts, expenses and other documents'. Expense reimbursement is folded into the same form (25 currencies). Form explicitly warns against submitting credit card details. IMPORTANT: the operating-carrier dropdown covers the whole Lufthansa Group and partners — OS, SN, WK, EW, 4Y, LH, LX plus A3, AC, CA, AI, NZ, NH, Asiana, AV, CM, OU, MS, ET, BR, LO, SK, ZH, SQ, SA, TP, TG, TK, UA. So this single endpoint may be a viable path for LX and TP as well.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch, HTTP 200, full form body parsed",
+          "note": "The /mk/ (North Macedonia) market path was the one that responded. Other market prefixes are presumed equivalent but were NOT independently confirmed — re-verify before switching locale."
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "AF",
     "carrierName": "Air France",
     "isEuCarrier": true,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "An \"assistance et indemnisation\" page reportedly exists on airfrance.com, but automated verification timed out (likely a JS-rendered page) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://wwws.airfrance.fr/claim",
+        "requiredFields": null,
+        "guidance": [
+          "They offer a choice between a travel voucher and a cash payment. The voucher is shown as the bigger number, but cash is what the regulation actually entitles you to, and the voucher is non-refundable.",
+          "Compensation cannot be paid at the airport — it has to go through customer service.",
+          "The claim must be addressed to the airline that actually operated the flight, which matters on a codeshare."
+        ],
+        "research": "Note the 'wwws' subdomain — this is not a typo, and www.airfrance.fr is not the same host. Reached via the official EC261 passenger-rights notice at https://wwws.airfrance.fr/information/legal/assistance-et-indemnisation, which links this exact URL under 'Compléter le formulaire'. That notice also states compensation cannot be paid at the airport and must go through customer service, and that claims must be addressed to the OPERATING carrier — relevant for AF/KL codeshares. AF offers a choice between a non-refundable travel voucher (350/500/800 EUR) and cash (250/400/600 EUR); the voucher is the higher headline number and is likely what the airline steers claimants toward. Notice last updated September 2024.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of the linking legal page (full text parsed) + fetch of /claim returned HTTP 200",
+          "note": "The /claim page body is JS-rendered, so field names could not be enumerated. URL existence and official provenance are confirmed; required fields are not."
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "KL",
     "carrierName": "KLM",
     "isEuCarrier": true,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A refund/compensation page reportedly exists on klm.com, but automated verification timed out (likely a JS-rendered page) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://www.klm.com/contact/topic/refund-compensation/subtopic/complaint",
+        "requiredFields": null,
+        "guidance": [
+          "A refund and compensation are different things and have different forms — this is the compensation one.",
+          "They offer a choice between a travel voucher and a cash payment. The voucher is shown as the bigger number, but cash is what the regulation actually entitles you to."
+        ],
+        "research": "KLM has no standalone /claim endpoint equivalent to Air France's. Its passenger-rights notice (https://www.klm.com/information/legal/passenger-rights) does not link a dedicated compensation form at all — it routes claimants to 'Contact us' generally. This URL is the 'Claims' entry in KLM's own site-wide footer and is the closest thing to a canonical claims channel. A separate refund path exists at /contact/topic/refund-compensation/subtopic/refund — refund and compensation are different things, don't conflate them. Same AF/KL voucher-vs-cash split applies. Notice last updated November 2024.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of klm.com passenger-rights page; URL taken from KLM's own footer nav",
+          "note": "Officially published by KLM, but the form itself was not loaded and no field list was captured. Lower confidence than AF/LH."
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "IB",
     "carrierName": "Iberia",
     "isEuCarrier": true,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "Relevant claims/help pages reportedly exist on iberia.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "urlTemplate": "https://www.iberia.com/{lang}/customer-relations/",
+        "urlTemplateValues": { "lang": "es" },
+        "requiredFields": null,
+        "guidance": [
+          "Their published response window is 30 days, after which the Spanish aviation authority is the documented next step.",
+          "Iberia Express is a separate operating carrier with its own channel, so a flight operated by them does not go here."
+        ],
+        "research": "LOWEST CONFIDENCE ENTRY IN THIS FILE — treat as a lead, not a fact. iberia.com actively defeats automated access: it returns an infinite redirect loop to non-browser clients on every locale tried (previously it was 403s). The path is corroborated by two independent sources: a passenger account quoting the URL given to them by an Iberia phone agent, and a claims-industry writeup describing the Customer Relations page as the EC261 route ('select complaints, then fill in the details'). The /fr/relations-clients/ localised variant also appears, which fits a per-language path pattern rather than a per-country one. Iberia Express (I2) is a separate operating carrier with its own channel — do not route I2 flights here. Iberia's published response window is 30 days, after which escalation to AESA is the documented next step.",
+        "verification": {
+          "status": "unverified",
+          "date": "2026-08-11",
+          "method": "blocked — infinite redirect on every fetch attempt across locales",
+          "note": "Needs a human with a real browser to load this and confirm the path plus the correct topic selection for EC261. Do not ship this URL to users without that check."
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "AZ",
     "carrierName": "ITA Airways",
     "isEuCarrier": true,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A compensation request form reportedly exists on ita-airways.com, but automated verification was blocked (HTTP 403 on every candidate page) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://www.complaint.ita-airways.com/s/complaint?language=it&market=IT",
+        "requiredFields": null,
+        "guidance": [
+          "They state the service is free and handled by their own specialists.",
+          "They explicitly discourage using a claims agency and will not reimburse an agency's fees, so expect friction if the claim arrives from an intermediary."
+        ],
+        "research": "Salesforce-hosted portal on a separate subdomain, NOT on ita-airways.com — worth allowlisting separately if you do any URL validation. Both language and market are query params, so other locales are almost certainly reachable by swapping them, though only the it/IT combination is confirmed. ITA's passenger-rights page links this same URL twice: once for EC261 compensation and expense reimbursement, and once from the site footer as 'Segnalazioni e reclami'. ITA states the service is free and staffed by specialists, and explicitly discourages claims agencies (it will not reimburse their fees) — expect friction if you submit as an intermediary. Legal entity is Italia Trasporto Aereo S.p.A., Via Venti Settembre 97, 00187 Roma. Italian NEB is ENAC; the Italian limitation period is 2 years from the flight date, notably shorter than Spain's 5.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of https://www.ita-airways.com/it/it/legal/passenger-rights, HTTP 200, target URL extracted from the live href",
+          "note": "URL provenance is solid. Portal itself not loaded (Salesforce SPA), so no field list."
+        }
+      },
+      {
+        "kind": "email",
+        "address": "italiatrasportoaereo@legalmail.it",
+        "mailbox": "pec",
+        "requiredFields": null,
+        "guidance": [
+          "This is a certified email address, which under Italian law carries the legal weight of registered post with proof of delivery.",
+          "It reaches their corporate legal department rather than the claims desk, so it is the right channel for escalating or creating a dated record — not for filing in the first instance."
+        ],
+        "research": "Certified email (Posta Elettronica Certificata) published in ITA's own site footer. Under Italian law a PEC message carries the legal weight of registered post with proof of delivery, so this is a genuinely usable formal channel — but it is the corporate legal address, not the claims desk. Use it for escalation or to establish a dated record, not as the primary submission route. Deliberately marked mailbox=pec so sendClaim will never auto-dispatch to it.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "published in ITA's own site footer"
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "FR",
     "carrierName": "Ryanair",
     "isEuCarrier": true,
+    "thirdPartySubmission": "restricted",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A dedicated claims subdomain (eu261claims.ryanair.com) is consistently referenced across independent search results, but it refused a direct connection on two separate verification attempts — needs a manual visit to confirm before this can be trusted; do not encode this URL as fact until someone has actually loaded it."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://help.ryanair.com/hc/en-us/articles/360017825538-EU-261-Passenger-Rights",
+        "requiredFields": null,
+        "guidance": [
+          "Their published processing target is 10 days.",
+          "Compensation and expense claims are reviewed as separate cases even when you submit them together.",
+          "From this page, look for the buttons to apply for compensation — that is where the actual form lives."
+        ],
+        "research": "This URL is the verified help-centre article, NOT the form itself — it carries two buttons ('Apply for Compensation' and 'Compensation Form') whose href targets were stripped by the extractor. The widely-referenced eu261claims.ryanair.com subdomain remains unconfirmed and refused direct connections on three separate attempts across two sessions; do not hardcode it. Ryanair states a 10-day processing target. Compensation and expense claims are reviewed as separate cases even when submitted together. CRITICAL IF YOU SUBMIT ON SOMEONE ELSE'S BEHALF: Ryanair operates a mandatory registration scheme for Claims Management Companies and has litigated successfully (UK County Court, upheld jurisdiction clause) to force claims through its own channel rather than third parties. Its terms require claims be submitted directly by the passenger. An automated tool acting as an intermediary is squarely in the category Ryanair is set up to block — this is why thirdPartySubmission is 'restricted', which also forces autoSendChannel to null.",
+        "verification": {
+          "status": "partially_verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of the help-centre article, HTTP 200, full body parsed; form target URL not recoverable",
+          "note": "The entry point is confirmed. The terminal form URL is not."
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "EI",
     "carrierName": "Aer Lingus",
     "isEuCarrier": true,
+    "thirdPartySubmission": "requires_authorization",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "web_form",
-      "formUrl": "https://www.aerlingus.com/app/support/forms/flight-disruption-compensation-form",
-      "requiredFields": ["fullName", "contactEmail", "phone", "iban"],
-      "formNotes": "Verified via a direct fetch of https://www.aerlingus.com/support/customer-care/requests-and-enquiries/ (2026-08-11), which explicitly states \"If you're looking to submit a claim for EU Regulation 261 then choose from the below options\" and links this exact URL for delay/cancellation compensation. A separate expenses-claim form exists at the same path with /flight-disruption-expenses-form for accommodation/meals/transport costs, not compensation itself. Page states the form asks for booking reference, flight details, passenger name, contact details, and bank account details for payment (plus a letter of authorisation if claiming on someone else's behalf)."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://www.aerlingus.com/app/support/forms/flight-disruption-compensation-form",
+        "requiredFields": ["fullName", "contactEmail", "phone", "iban"],
+        "guidance": [
+          "There is a separate form for out-of-pocket expenses such as accommodation, meals and transport — this one is for the compensation itself."
+        ],
+        "research": "Verified via a direct fetch of https://www.aerlingus.com/support/customer-care/requests-and-enquiries/ (2026-08-11), which explicitly states \"If you're looking to submit a claim for EU Regulation 261 then choose from the below options\" and links this exact URL for delay/cancellation compensation. A separate expenses-claim form exists at the same path with /flight-disruption-expenses-form for accommodation/meals/transport costs, not compensation itself. Page states the form asks for booking reference, flight details, passenger name, contact details, and bank account details for payment (plus a letter of authorisation if claiming on someone else's behalf).",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of the linking support page"
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "TP",
     "carrierName": "TAP Air Portugal",
     "isEuCarrier": true,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "web_form",
-      "formUrl": "https://www.flytap.com/en_br/help/requests-complaints/complaints",
-      "requiredFields": ["fullName", "iban"],
-      "formNotes": "Verified via a direct fetch of https://www.flytap.com/en-br/help/delays-cancellations (2026-08-11), which links this exact URL with the text \"access our complaints form and request your compensation\" for cancellations/delays over 3 hours. Note this was confirmed via the Brazil-locale (en_br) path specifically — flytap.com serves this same complaints form under other locale prefixes (e.g. en-pt); the underlying form is presumed shared but that wasn't independently confirmed, so re-verify if a different locale's URL is ever preferred. Page states the form asks for passenger name(s), flight number/date/route, ticket number(s), supporting documents, and bank details for payment."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://www.flytap.com/en_br/help/requests-complaints/complaints",
+        "requiredFields": ["fullName", "iban"],
+        "guidance": [
+          "They will also ask for your ticket numbers and any supporting documents alongside the flight details."
+        ],
+        "research": "Verified via a direct fetch of https://www.flytap.com/en-br/help/delays-cancellations (2026-08-11), which links this exact URL with the text \"access our complaints form and request your compensation\" for cancellations/delays over 3 hours. Note this was confirmed via the Brazil-locale (en_br) path specifically — flytap.com serves this same complaints form under other locale prefixes (e.g. en-pt); the underlying form is presumed shared but that wasn't independently confirmed, so re-verify if a different locale's URL is ever preferred. Page states the form asks for passenger name(s), flight number/date/route, ticket number(s), supporting documents, and bank details for payment. TP also appears in the Lufthansa group form's operating-carrier dropdown, but the TAP-native form should be preferred.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of the linking help page"
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "BA",
     "carrierName": "British Airways",
     "isEuCarrier": false,
+    "thirdPartySubmission": "requires_authorization",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A claims form and a postal address for EU compensation claims (British Airways Customer Relations, EU Compensation Claims, PO Box 1126, Uxbridge UB8 9XS, UK) are referenced in search results, but ba.com returned only a \"high demand\" holding page on every automated fetch attempt — needs a manual visit to confirm the exact form URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "url": "https://www.britishairways.com/travel/feedbackclaims/public/en_gb",
+        "requiredFields": [
+          "claimantName",
+          "claimantContactDetails",
+          "otherPassengerNames",
+          "otherPassengerContactDetails",
+          "bookingReference",
+          "flightDetails",
+          "bankAccountDetails",
+          "receipts"
+        ],
+        "guidance": [
+          "The same form covers compensation, expenses, downgrade refunds and denied boarding — you choose which one inside it.",
+          "They warn it takes 10 to 15 minutes to complete.",
+          "If surnames differ within a single booking they will ask for written authorisation.",
+          "They quote the amount in both euros and pounds; which applies depends on where the flight departed from."
+        ],
+        "research": "Best-documented carrier in this file. The same endpoint handles compensation, expense reimbursement, downgrade refunds and denied-boarding claims — the claim type is selected inside the form, so one URL covers four cases. BA warns the flow takes 10-15 minutes. Third-party claims require a signed letter of authority from every passenger included, and BA separately requires authorisation where surnames differ within one booking. BA quotes both EUR and GBP amounts (250/400/600 EUR or 220/350/520 GBP) — post-Brexit this is UK261 for UK departures and EU261 otherwise, and BA runs them through the same channel. A claim-status checker lives at /content/information/help-and-contacts/complaints-and-claims. An expenses-only shortcut also exists at /travel/helpcentre/?dt=1|1|1&id=2.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of https://www.britishairways.com/content/information/delayed-or-cancelled-flights, HTTP 200, full body parsed",
+          "note": "Earlier attempts hit a 'high demand' holding page; the /content/information/ path went through cleanly. Retry that path if ba.com blocks you again."
+        }
+      },
+      {
+        "kind": "postal",
+        "address": {
+          "lines": [
+            "British Airways Customer Relations",
+            "EU Compensation Claims",
+            "PO Box 1126",
+            "Uxbridge",
+            "UB8 9XS"
+          ],
+          "countryIsoCode": "GB"
+        },
+        "requiredFields": [
+          "claimantName",
+          "claimantContactDetails",
+          "bookingReference",
+          "flightDetails",
+          "bankAccountDetails"
+        ],
+        "guidance": [
+          "They offer this for claimants who cannot use the online form, and ask you to allow extra processing time."
+        ],
+        "research": "CONFIRMED on BA's own site, not just search results — BA states this is for claimants who cannot claim online, and warns to allow extra processing time. This is a real fallback channel, unlike the postal addresses circulating for other carriers.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "published on britishairways.com alongside the online claim route"
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "LX",
     "carrierName": "Swiss International Air Lines",
     "isEuCarrier": false,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "A specifically-named \"Application for compensation in the event of flight irregularities\" form reportedly exists on swiss.com, but automated verification was blocked (HTTP 403) — needs a manual visit to confirm the exact URL before this can be trusted."
-    }
+    "excludedChannels": [],
+    "channels": [
+      {
+        "kind": "web_form",
+        "urlTemplate": "https://www.swiss.com/{market}/{lang}/customer-support/contact-us/application-for-compensation-in-the-event-of-flight-irregularities",
+        "urlTemplateValues": { "market": "th", "lang": "en" },
+        "requiredFields": ["iban", "bic", "bookingReferenceOrETicketNumber", "receipts"],
+        "guidance": [
+          "They ask for a BIC as well as an IBAN, which most other airlines do not.",
+          "The same form covers compensation and reimbursement of hotel, transport and meal costs.",
+          "As a rule they reimburse three-star hotel costs against receipt, and a higher category only where no three-star room was available."
+        ],
+        "research": "The form title previously found in search results is real and the URL is now confirmed. SWISS explicitly requires BOTH IBAN and BIC — note the BIC, which most of the other carriers here don't ask for. Same endpoint handles EC261 compensation and reimbursement of hotel/transport/meal costs. SWISS states it reimburses three-star hotel costs against receipt as a rule, higher category only where no three-star was available. Being a Lufthansa Group carrier, LX also appears in the Lufthansa form's operating-carrier dropdown — either path may work, but the LX-native form is the documented one.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of https://www.swiss.com/th/en/fly/flight-information/flight-irregularities/faq, HTTP 200, target URL extracted from the live href",
+          "note": "The /th/ (Thailand) market path was the one that responded, same pattern as Lufthansa. Market/lang segments are presumed swappable but unconfirmed."
+        }
+      },
+      {
+        "kind": "postal",
+        "address": {
+          "lines": ["Swiss International Air Lines Ltd.", "Customer Feedback Services", "P.O. Box", "8010 Zurich"],
+          "countryIsoCode": "CH"
+        },
+        "requiredFields": ["iban", "bic", "bookingReferenceOrETicketNumber", "receipts"],
+        "guidance": [
+          "They present post as a genuine alternative to the web form for sending receipts and bank details."
+        ],
+        "research": "CONFIRMED on swiss.com. SWISS presents post as a genuine alternative to the web form for submitting receipts and bank details, not merely a corporate address. Note the PO Box has no number in SWISS's own rendering — that is how they publish it.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "published on swiss.com alongside the compensation form"
+        }
+      }
+    ]
   },
   {
     "carrierIataCode": "TK",
     "carrierName": "Turkish Airlines",
     "isEuCarrier": false,
+    "thirdPartySubmission": "allowed",
     "knownRejectionPatterns": [],
-    "submissionMethod": {
-      "type": "unsupported",
-      "reason": "turkishairlines.com timed out on every automated fetch attempt; no official claims channel could be found — only third-party sources (excluded per policy) surfaced anything, including an unverified email address explicitly not listed as an official complaints channel."
-    }
+    "excludedChannels": [
+      {
+        "kind": "email",
+        "reason": "TK does not publish or monitor a complaints email address. Any TK email address circulating online is not an official channel — an earlier unverified address was deliberately excluded and should stay excluded."
+      }
+    ],
+    "channels": [
+      {
+        "kind": "web_form",
+        "entryUrl": "https://www.turkishairlines.com/en-int/any-questions/customer-relations/feedback/",
+        "url": "https://feedback.turkishairlines.com/en",
+        "requiredFields": ["pnr", "flightDetails", "issueCategory", "description"],
+        "guidance": [
+          "There is no dedicated EC261 form — you file through their general feedback portal and pick the flight-disruption category.",
+          "You will need the 6-character booking reference.",
+          "The portal issues a case reference you can use to track it."
+        ],
+        "research": "Previously marked unsupported because turkishairlines.com timed out — it does resolve, but the customer-relations path 302s to a separate subdomain, feedback.turkishairlines.com, which is what was actually timing out under the old host. Allowlist both. There is NO dedicated EC261 form: compensation is requested through the general feedback portal by selecting the flight-disruption category and supplying the EU departure airport plus delay length or cancellation details. The portal issues a case reference (observed format TK-XXXXXXX) usable for tracking. Requires the 6-character PNR. Coverage caveat: TK is a non-EU carrier, so EC261 applies only to EU departures — an IST-JFK flight is out of scope, a FRA-IST flight is in scope. That is already enforced by isEuCarrier plus domain/ec261/eligibility.ts, not by this entry.",
+        "verification": {
+          "status": "verified",
+          "date": "2026-08-11",
+          "method": "direct fetch of the turkishairlines.com customer-relations path, HTTP 200, redirected to feedback.turkishairlines.com/en",
+          "note": "Redirect chain and final host confirmed. The portal is a JS app, so the field list is inferred from documentation rather than parsed."
+        }
+      }
+    ]
   }
 ]

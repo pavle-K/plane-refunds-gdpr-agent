@@ -2,16 +2,14 @@ import { z } from "zod";
 import type { GraphStateType } from "../state.js";
 import type { LlmClient } from "../llm/llm.port.js";
 import type { AuditLog } from "../../compliance/audit-log.js";
-import type {
-  AirlineDirectoryProvider,
-  AirlineClaimsContact,
-  AirlineDirectoryError,
-  ClaimSubmissionMethod,
-  PassengerFieldKey,
-} from "../../providers/airline-directory/airline-directory.port.js";
+import type { AirlineDirectoryProvider } from "../../providers/airline-directory/airline-directory.port.js";
+import {
+  buildSubmissionPlan,
+  type PresentableChannel,
+  type SubmissionPlan,
+} from "../../providers/airline-directory/submission-plan.js";
 import type { Booking } from "../../domain/claim/claim.types.js";
 import type { FlightStatusResult } from "../../providers/flight-status/flight-status.port.js";
-import type { Result } from "../../lib/result.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
 
@@ -23,42 +21,14 @@ export interface DraftClaimNodeDeps {
 
 const draftSchema = z.object({ letterText: z.string() });
 
-const REQUIRED_FIELD_LABELS: Record<PassengerFieldKey, string> = {
-  fullName: "full name",
-  address: "postal address",
-  contactEmail: "contact email",
-  phone: "phone number",
-  iban: "bank details (IBAN) for the payout",
-};
-
 function formatEuros(cents: number): string {
   // EC261 compensation bands are always whole euros (€250/€400/€600) — see
   // domain/ec261/compensation.ts — so no decimal formatting is needed here.
   return `€${Math.round(cents / 100)}`;
 }
 
-/**
- * A formal "Dear Sir/Madam" letter is the wrong artifact for a carrier that
- * only accepts claims through its own web form — there's nowhere to paste
- * prose like that, and it invites the same "send it" confusion draftText
- * always risked implying. This builds a plain, deterministic submission
- * packet instead: the form link, the facts the human will need to enter, and
- * an explicit note that automatic form-filling isn't built yet. No LLM call
- * needed — every fact here is already known and verified elsewhere in the
- * pipeline; this is formatting, not drafting.
- */
-function buildWebFormSubmissionPacket(params: {
-  booking: Booking;
-  flightStatuses: FlightStatusResult[];
-  compensationCents: number;
-  eligibilityReason: string | null;
-  carrierName: string;
-  method: Extract<ClaimSubmissionMethod, { type: "web_form" }>;
-}): string {
-  const { booking, flightStatuses, compensationCents, eligibilityReason, carrierName, method } = params;
-  const passengerName = booking.passengers[0]?.fullName ?? "Unknown Passenger";
-
-  const itineraryLines = flightStatuses
+function buildItineraryLines(flightStatuses: FlightStatusResult[]): string {
+  return flightStatuses
     .map((s) => {
       const disruption =
         s.status === "delayed"
@@ -69,56 +39,45 @@ function buildWebFormSubmissionPacket(params: {
       return `  - ${s.flightNumber}: ${s.departureAirportIata} -> ${s.arrivalAirportIata}, scheduled ${s.scheduledDepartureUtc.slice(0, 10)}${disruption}`;
     })
     .join("\n");
-
-  const fieldsLine =
-    method.requiredFields.length > 0
-      ? `\nThis form will likely also ask for: ${method.requiredFields.map((f) => REQUIRED_FIELD_LABELS[f]).join(", ")}.`
-      : "";
-
-  return (
-    `${carrierName} only accepts EC261 claims through their own web form — automatic submission isn't built ` +
-    "yet (it's a tracked follow-up), so this has to be submitted by hand for now.\n\n" +
-    `Submit it here: ${method.formUrl}\n\n` +
-    "Here's what you'll need to enter:\n" +
-    `- Booking reference: ${booking.bookingReference}\n` +
-    `- Passenger: ${passengerName}\n` +
-    `- Flight(s):\n${itineraryLines}\n` +
-    `- Compensation to claim: ${formatEuros(compensationCents)} (EC261/2004${eligibilityReason ? ` — ${eligibilityReason}` : ""})` +
-    fieldsLine
-  );
 }
 
 /**
- * Tells the human, at draft time — before they're ever asked to approve —
- * whether this claim can actually be sent automatically. Deliberately does
- * NOT block drafting: something useful is still produced even when a claim
- * can't be auto-sent yet, but "approve" must never be allowed to imply "and
- * it went out" for a carrier this returns non-null for. send-claim.node.ts
- * enforces this independently regardless of whether this warning was shown.
+ * A formal "Dear Sir/Madam" letter is the wrong artifact for a carrier that
+ * doesn't accept letters — there is nowhere to paste prose into a web form, and
+ * producing one invited exactly the "so it's been sent?" confusion that
+ * draftText always risked.
+ *
+ * This builds a deterministic submission packet instead: what the plan says
+ * about the carrier's channels, plus the facts the human will need to supply.
+ * No LLM call — every fact here was already computed and verified elsewhere in
+ * the pipeline, so this is formatting, not drafting. That distinction matters:
+ * the letter path is where a fabricated booking reference came from once, and
+ * there is no generative step here to fabricate anything with.
  */
-function describeSubmissionWarning(
-  airlineResult: Result<AirlineClaimsContact, AirlineDirectoryError>,
-): string | null {
-  if (!airlineResult.ok) {
-    return "I don't have a directory entry for this airline, so I don't yet know how to submit a claim to it automatically.";
-  }
+function buildSubmissionPacket(params: {
+  booking: Booking;
+  flightStatuses: FlightStatusResult[];
+  compensationCents: number;
+  eligibilityReason: string | null;
+  plan: SubmissionPlan;
+}): string {
+  const { booking, flightStatuses, compensationCents, eligibilityReason, plan } = params;
+  const passengerName = booking.passengers[0]?.fullName ?? null;
 
-  const { submissionMethod, carrierName } = airlineResult.value;
-  switch (submissionMethod.type) {
-    case "email":
-      return null;
-    case "web_form":
-      return (
-        `${carrierName} requires claims to be submitted through their own web form — automatic submission ` +
-        "isn't built yet, so I've put together the link and everything you'll need below."
-      );
-    case "unsupported":
-      return (
-        `I don't have a sourced/verified way to submit a claim to ${carrierName} yet ` +
-        `(${submissionMethod.reason}) — I can prepare the letter for you to send yourself ` +
-        "once we know where it needs to go."
-      );
-  }
+  const facts = [
+    `- Booking reference: ${booking.bookingReference}`,
+    ...(passengerName ? [`- Passenger: ${passengerName}`] : []),
+    `- Flight(s):\n${buildItineraryLines(flightStatuses)}`,
+    `- Compensation to claim: ${formatEuros(compensationCents)} (EC261/2004${eligibilityReason ? ` — ${eligibilityReason}` : ""})`,
+  ].join("\n");
+
+  return `${plan.message}\n\nHere are the details you'll need:\n${facts}`;
+}
+
+/** True when at least one channel can carry a written letter — email or post.
+ * A web form cannot, so a carrier offering only a form gets the packet. */
+function acceptsALetter(channels: readonly PresentableChannel[]): boolean {
+  return channels.some((channel) => channel.kind === "email" || channel.kind === "postal");
 }
 
 /**
@@ -126,12 +85,17 @@ function describeSubmissionWarning(
  * pipeline "loops back" to (§2.2). Which mode it's in is read from state: if the
  * last response was classified "rejected", this is a rebuttal.
  *
- * Rebuttal mode only ever reaches an LLM-drafted letter: rebutting requires a
- * real airline reply, which requires a real prior send, which is only
- * possible today for an "email" carrier (sendClaim refuses everything else) —
- * so the web-form packet path below is unreachable in rebuttal mode as the
- * graph is wired today. Written to fail safe (fall through to the normal
- * letter path) rather than assume that can never change.
+ * Three outcomes, decided from the submission plan rather than from a single
+ * submission-method type:
+ *
+ *  - No usable channel (carrier unknown, nothing recorded, or only unverified
+ *    leads): produce NO draft at all. This is the fix for a real incident — an
+ *    unsupported carrier used to fall through to the letter path, and the model
+ *    wrote a full formal claim for an airline with nowhere to send it, complete
+ *    with an invented booking reference. There is now no generative step on this
+ *    path to invent anything with.
+ *  - A channel that can carry a letter (email or post): draft one with the LLM.
+ *  - Web form only: build the deterministic packet.
  */
 export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {
@@ -142,26 +106,38 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
     const isRebuttal = state.responseClassification?.category === "rejected";
 
     const lastFlightStatus = state.flightStatuses[state.flightStatuses.length - 1]!;
-    const airlineResult = await deps.airlineDirectory.getAirline(lastFlightStatus.operatingCarrierIataCode);
-    const submissionWarning = describeSubmissionWarning(airlineResult);
+    const carrierCode = lastFlightStatus.operatingCarrierIataCode;
+    const plan = buildSubmissionPlan(carrierCode, await deps.airlineDirectory.getAirline(carrierCode));
 
-    if (!isRebuttal && airlineResult.ok && airlineResult.value.submissionMethod.type === "web_form") {
-      const packet = buildWebFormSubmissionPacket({
+    if (plan.selection.type === "none_available") {
+      await deps.auditLog.record({
+        claimId: state.claimId,
+        entryType: "system_action",
+        payload: { node: "draftClaim", isRebuttal, outcome: "no_submission_channel", reason: plan.selection.reason },
+      });
+      return { draftText: null, submission: plan };
+    }
+
+    // A rebuttal only exists because a real reply came back, which means a real
+    // send happened, which today is only possible on an email channel — so
+    // rebuttals always take the letter path. Written as a condition rather than
+    // relied on as an assumption, in case that stops being true.
+    if (!isRebuttal && !acceptsALetter(plan.channels)) {
+      const packet = buildSubmissionPacket({
         booking: state.booking,
         flightStatuses: state.flightStatuses,
         compensationCents: state.compensationCents,
         eligibilityReason: state.eligibilityReason,
-        carrierName: airlineResult.value.carrierName,
-        method: airlineResult.value.submissionMethod,
+        plan,
       });
 
       await deps.auditLog.record({
         claimId: state.claimId,
         entryType: "system_action",
-        payload: { node: "draftClaim", isRebuttal, submissionMethodType: "web_form", packet },
+        payload: { node: "draftClaim", isRebuttal, outcome: "submission_packet", packet },
       });
 
-      return { draftText: packet, submissionWarning };
+      return { draftText: packet, submission: plan };
     }
 
     const basePayload = {
@@ -182,6 +158,7 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       })),
       compensationCents: state.compensationCents,
       eligibilityReasoning: state.eligibilityReason,
+      addresseeCarrierName: plan.carrierName,
       evidence: {
         weatherObservation: state.weatherObservation,
         disruptionEvents: state.disruptionEvents,
@@ -213,6 +190,6 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       payload: { node: "draftClaim", isRebuttal, letterText },
     });
 
-    return { draftText: letterText, submissionWarning };
+    return { draftText: letterText, submission: plan };
   };
 }
