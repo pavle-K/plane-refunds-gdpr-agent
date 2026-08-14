@@ -5,7 +5,13 @@ import { createHumanApprovalNode } from "../../../../src/agent/nodes/human-appro
 import { createSendClaimNode } from "../../../../src/agent/nodes/send-claim.node.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { FakeEmailSendAdapter } from "../../../../src/providers/email-send/fake.adapter.js";
-import { buildAnyCodeEmailAirlineDirectory } from "../../../../src/providers/airline-directory/fake.adapter.js";
+import {
+  buildAnyCodeEmailAirlineDirectory,
+  buildAirlineClaimsContact,
+  buildWebFormChannel,
+} from "../../../../src/providers/airline-directory/fake.adapter.js";
+import { buildSubmissionPlan, type SubmissionPlan } from "../../../../src/providers/airline-directory/submission-plan.js";
+import { ok } from "../../../../src/lib/result.js";
 import type { Booking } from "../../../../src/domain/claim/claim.types.js";
 
 /**
@@ -52,6 +58,32 @@ function threadConfig(threadId: string) {
   return { configurable: { thread_id: threadId } };
 }
 
+
+
+/** A plan for a carrier that CAN be dispatched to automatically. Under the old
+ * `submissionWarning` model, "can send" was the absence of a value; it is now a
+ * positive assertion, so these tests have to state it. That inversion is
+ * deliberate — see the polarity note on human-approval.node.ts. */
+function buildAutoSendablePlan(): SubmissionPlan {
+  return buildSubmissionPlan("LH", ok(buildAirlineClaimsContact()));
+}
+
+/** A submission plan for a carrier that exists and has a usable route, but one
+ * nothing can be dispatched to automatically — the common case in the real
+ * dataset, where every carrier is a web form. */
+function buildNoAutoSendPlan(): SubmissionPlan {
+  return buildSubmissionPlan(
+    "FR",
+    ok(
+      buildAirlineClaimsContact({
+        carrierIataCode: "FR",
+        carrierName: "Ryanair",
+        channels: [buildWebFormChannel()],
+      }),
+    ),
+  );
+}
+
 describe("human-approval node — the mandatory pause before any outbound send", () => {
   it("interrupts the graph and sends NOTHING before resume", async () => {
     const { graph, emailSend } = buildMiniGraph();
@@ -74,7 +106,13 @@ describe("human-approval node — the mandatory pause before any outbound send",
     const config = threadConfig("approve-1");
 
     await graph.invoke(
-      { claimId: "c1", claimStatus: "draft", booking: BOOKING, draftText: "Dear airline..." },
+      {
+        claimId: "c1",
+        claimStatus: "draft",
+        booking: BOOKING,
+        draftText: "Dear airline...",
+        submission: buildAutoSendablePlan(),
+      },
       config,
     );
     const result = await graph.invoke(new Command({ resume: { action: "approve" } }), config);
@@ -90,7 +128,13 @@ describe("human-approval node — the mandatory pause before any outbound send",
     const config = threadConfig("edit-1");
 
     await graph.invoke(
-      { claimId: "c1", claimStatus: "draft", booking: BOOKING, draftText: "original draft" },
+      {
+        claimId: "c1",
+        claimStatus: "draft",
+        booking: BOOKING,
+        draftText: "original draft",
+        submission: buildAutoSendablePlan(),
+      },
       config,
     );
     const result = await graph.invoke(
@@ -128,7 +172,7 @@ describe("human-approval node — the mandatory pause before any outbound send",
         claimStatus: "draft",
         booking: BOOKING,
         draftText: "Submit it here: https://example-airline.test/claims",
-        submissionWarning: "This airline requires claims to be submitted through their own web form.",
+        submission: buildNoAutoSendPlan(),
       },
       config,
     );
@@ -150,7 +194,7 @@ describe("human-approval node — the mandatory pause before any outbound send",
         claimStatus: "draft",
         booking: BOOKING,
         draftText: "original packet",
-        submissionWarning: "no automated channel",
+        submission: buildNoAutoSendPlan(),
       },
       config,
     );

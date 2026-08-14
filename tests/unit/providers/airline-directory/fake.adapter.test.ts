@@ -55,7 +55,7 @@ describe("buildAnyCodeEmailAirlineDirectory", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.submissionMethod.type).toBe("email");
+      expect(result.value.channels[0]?.kind).toBe("email");
       expect(result.value.carrierIataCode).toBe("XX");
     }
   });

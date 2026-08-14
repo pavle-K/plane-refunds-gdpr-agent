@@ -13,6 +13,7 @@ import { ConsentRepo } from "../db/repositories/consent.repo.js";
 import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repositories/pending-confirmation.repo.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
 import { createEmailIngestProvider, FakeEmailIngestAdapter } from "../providers/email-ingest/index.js";
+import { toOperatorAirlineView } from "../providers/airline-directory/submission-plan.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import type { Booking } from "../domain/claim/claim.types.js";
@@ -94,8 +95,9 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
       "required per segment — the pipeline looks up departure/arrival airports, the operating carrier, and the " +
       "actual delay/cancellation status itself from the flight number and date, so do NOT ask the user for " +
       "airport codes or a carrier code; just call this with what you already extracted. Returns the eligibility " +
-      "result and, if eligible, the drafted claim letter for the user to review — do NOT treat this as sent or " +
-      "approved, it always needs a separate explicit decision.",
+      "result, a `submission` object saying how (or whether) a claim can actually reach this airline, and — when " +
+      "there is something to review — draftText. Do NOT treat any of this as sent or approved; it always needs a " +
+      "separate explicit decision, and for most carriers approving still cannot dispatch anything automatically.",
     inputSchema: {
       type: "object",
       properties: {
@@ -151,10 +153,12 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
     name: "list_supported_airlines",
     description:
-      "Returns every airline this system knows about and how (if at all) a claim can currently be submitted to " +
-      "it — email, their own web form, or not yet supported, with why. This is the ONLY correct way to answer a " +
+      "Returns every airline this system knows about and every route by which a claim can currently reach each " +
+      "one — their own web form, email, post, or nothing confirmed yet. This is the ONLY correct way to answer a " +
       "general question like 'which airlines can you send to automatically' or 'what about Lufthansa/Ryanair/etc' " +
-      "— never answer that kind of question from memory or a guess; call this and relay exactly what it returns.",
+      "— never answer that kind of question from memory or a guess; call this and relay exactly what it returns. " +
+      "A carrier with no channel listed genuinely has none on record: say it isn't supported, don't go looking " +
+      "for a form URL from memory.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -704,7 +708,7 @@ export class OperatorTools {
       eligibilityReason: state.values.eligibilityReason,
       compensationCents: state.values.compensationCents,
       draftText: state.values.draftText,
-      submissionWarning: state.values.submissionWarning,
+      submission: state.values.submission,
       escalationReason: state.values.escalationReason,
       payout: state.values.payout,
     };
@@ -712,23 +716,16 @@ export class OperatorTools {
 
   /** Grounds a general "which airlines support what" question in the real
    * directory data instead of the model guessing — see this tool's
-   * description in TOOL_DEFINITIONS for why that matters. */
+   * description in TOOL_DEFINITIONS for why that matters.
+   *
+   * Goes through toOperatorAirlineView rather than spreading the contact: that
+   * projection is what strips unverified addresses and is structurally unable to
+   * carry maintainer research (see providers/airline-directory/maintenance.ts). */
   private async listSupportedAirlines() {
     const airlines = await this.deps.airlineDirectory.listAirlines();
     return {
       airlines: airlines
-        .map((a) => ({
-          carrierIataCode: a.carrierIataCode,
-          carrierName: a.carrierName,
-          canAutoSend: a.submissionMethod.type === "email",
-          submissionMethodType: a.submissionMethod.type,
-          note:
-            a.submissionMethod.type === "email"
-              ? null
-              : a.submissionMethod.type === "web_form"
-                ? `Requires manual submission via their web form (${a.submissionMethod.formUrl}) — not automated yet.`
-                : a.submissionMethod.reason,
-        }))
+        .map(toOperatorAirlineView)
         .sort((a, b) => a.carrierName.localeCompare(b.carrierName)),
     };
   }
@@ -763,7 +760,7 @@ export class OperatorTools {
       eligibilityReason: result["eligibilityReason"],
       compensationCents: result["compensationCents"],
       draftText: result["draftText"],
-      submissionWarning: result["submissionWarning"],
+      submission: result["submission"],
       // A plain boolean, not a sentence: this used to return prose under the
       // same `pausedOn` key that get_claim_status returns a NODE NAME under,
       // so one field name carried two incompatible shapes across tool results.

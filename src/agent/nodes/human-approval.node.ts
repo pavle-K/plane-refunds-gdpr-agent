@@ -25,16 +25,26 @@ export interface HumanApprovalNodeDeps {
  * the original draft — approve and edit both reach "sent" IF this carrier actually
  * has an automated send path.
  *
- * `state.submissionWarning` (set by draftClaim) is already known at this point —
- * non-null means sendClaim WILL refuse regardless of what the human decides here
- * (see ClaimSubmissionNotAutomatedError). Rather than transition to "sent" anyway
- * and let that refusal happen downstream — which used to leave the checkpoint
+ * `state.submission` (set by draftClaim) is already known at this point. Its
+ * `autoSendChannel` is the single definition of "this can actually be
+ * dispatched", shared with sendClaim so the two cannot disagree. When it is
+ * null, sendClaim WILL refuse regardless of what the human decides here (see
+ * ClaimSubmissionNotAutomatedError). Rather than transition to "sent" anyway and
+ * let that refusal happen downstream — which used to leave the checkpoint
  * claiming "sent" forever even though nothing was ever dispatched, a real
  * correctness bug — this node picks the honest transition itself:
  * "needs_manual_submission" instead of "sent", and the graph never even attempts
  * sendClaim (see routeAfterApproval, which routes anything other than "sent" away
  * from it). The human's decision (approved/edited) is still recorded accurately;
  * only the DISPATCH outcome differs.
+ *
+ * NOTE ON POLARITY: this used to test `state.submissionWarning` — truthy meaning
+ * "cannot send". It now tests `state.submission?.autoSendChannel` — truthy
+ * meaning "CAN send". The sense is inverted, so a missing/blank value must fall
+ * on the CANNOT side: a claim checkpointed before this change hydrates
+ * `submission` as null/undefined and correctly ends at needs_manual_submission
+ * rather than falsely reporting a send. Written with `?.` and a truthiness test
+ * precisely so null, undefined and a plan without a channel all fail safe.
  */
 export function createHumanApprovalNode(deps: HumanApprovalNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {
@@ -58,7 +68,7 @@ export function createHumanApprovalNode(deps: HumanApprovalNodeDeps) {
       };
     }
 
-    const dispatchEvent = state.submissionWarning ? "CANNOT_AUTO_SEND" : "SEND";
+    const dispatchEvent = state.submission?.autoSendChannel ? "SEND" : "CANNOT_AUTO_SEND";
 
     if (decision.action === "edit") {
       if (!decision.editedText) {

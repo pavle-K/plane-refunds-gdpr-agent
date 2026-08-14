@@ -3,12 +3,13 @@ import { createDraftClaimNode } from "../../../../src/agent/nodes/draft-claim.no
 import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { StaticAirlineDirectoryAdapter } from "../../../../src/providers/airline-directory/static.adapter.js";
-import { buildAnyCodeEmailAirlineDirectory, buildAirlineClaimsContact } from "../../../../src/providers/airline-directory/fake.adapter.js";
+import {
+  buildAnyCodeEmailAirlineDirectory,
+  buildAnyCodeWebFormAirlineDirectory,
+} from "../../../../src/providers/airline-directory/fake.adapter.js";
 import { buildState } from "../../../helpers/build-state.js";
 import type { Booking } from "../../../../src/domain/claim/claim.types.js";
 import type { FlightStatusResult } from "../../../../src/providers/flight-status/flight-status.port.js";
-import type { AirlineDirectoryProvider } from "../../../../src/providers/airline-directory/airline-directory.port.js";
-import { ok } from "../../../../src/lib/result.js";
 
 const BOOKING: Booking = {
   bookingReference: "ABC123",
@@ -37,13 +38,21 @@ const FLIGHT_STATUS: FlightStatusResult = {
   cancellationNoticeDays: null,
 };
 
+/** Real dataset — every carrier in it is a web form, so this exercises the
+ * packet/refusal paths, not the letter path. */
 function buildDeps() {
   return { llm: new FakeLlmClient(), airlineDirectory: new StaticAirlineDirectoryAdapter(), auditLog: new FakeAuditLog() };
 }
 
+/** An email carrier, which is the only kind that reaches the LLM letter path.
+ * No real carrier qualifies today (see fake.adapter.ts), so this is a stub. */
+function buildLetterDeps() {
+  return { llm: new FakeLlmClient(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
+}
+
 describe("draft-claim node", () => {
   it("drafts using the original-claim prompt when there's no prior rejection", async () => {
-    const deps = buildDeps();
+    const deps = buildLetterDeps();
     deps.llm.enqueueJson({ letterText: "Dear Lufthansa, ..." });
     const node = createDraftClaimNode(deps);
 
@@ -57,7 +66,7 @@ describe("draft-claim node", () => {
   });
 
   it("switches to the rebuttal prompt when the last response was rejected", async () => {
-    const deps = buildDeps();
+    const deps = buildLetterDeps();
     deps.llm.enqueueJson({ letterText: "Dear Lufthansa, in response to your rejection..." });
     const node = createDraftClaimNode(deps);
 
@@ -83,20 +92,47 @@ describe("draft-claim node", () => {
   });
 });
 
-describe("draft-claim node — submissionWarning", () => {
-  it("sets a warning when the carrier's submission channel is unsupported (real directory data)", async () => {
-    const deps = buildDeps(); // StaticAirlineDirectoryAdapter — LH is "unsupported" in the real data
-    deps.llm.enqueueJson({ letterText: "Dear Lufthansa, ..." });
+describe("draft-claim node — submission plan", () => {
+  it("refuses to draft anything for a carrier with no usable channel (real directory data)", async () => {
+    // Iberia's only recorded channel is unverified, so there is nothing to
+    // submit to. This is the incident case: an unsupported carrier used to fall
+    // through to the letter path and the model wrote a full formal claim for an
+    // airline with nowhere to send it, inventing a booking reference on the way.
+    const deps = buildDeps();
     const node = createDraftClaimNode(deps);
 
     const result = await node(
-      buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], compensationCents: 60000 }),
+      buildState({
+        booking: BOOKING,
+        flightStatuses: [{ ...FLIGHT_STATUS, operatingCarrierIataCode: "IB" }],
+        compensationCents: 60000,
+      }),
     );
 
-    expect(result.submissionWarning).toContain("Lufthansa");
+    expect(deps.llm.calls).toHaveLength(0);
+    expect(result.draftText).toBeNull();
+    expect(result.submission?.selection.type).toBe("none_available");
+    expect(result.submission?.message).toContain("haven't been able to confirm");
   });
 
-  it("sets no warning when the carrier's submission method is email", async () => {
+  it("refuses to draft anything for a carrier with no directory entry at all", async () => {
+    const deps = buildDeps();
+    const node = createDraftClaimNode(deps);
+
+    const result = await node(
+      buildState({
+        booking: BOOKING,
+        flightStatuses: [{ ...FLIGHT_STATUS, operatingCarrierIataCode: "ZZ" }],
+        compensationCents: 60000,
+      }),
+    );
+
+    expect(deps.llm.calls).toHaveLength(0);
+    expect(result.draftText).toBeNull();
+    expect(result.submission?.message).toContain("isn't supported at the moment");
+  });
+
+  it("exposes an auto-sendable channel when the carrier accepts claims by email", async () => {
     const deps = { llm: new FakeLlmClient(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
     deps.llm.enqueueJson({ letterText: "Dear Lufthansa, ..." });
     const node = createDraftClaimNode(deps);
@@ -105,67 +141,82 @@ describe("draft-claim node — submissionWarning", () => {
       buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], compensationCents: 60000 }),
     );
 
-    expect(result.submissionWarning).toBeNull();
+    expect(result.submission?.autoSendChannel).not.toBeNull();
+    expect(result.draftText).toContain("Dear Lufthansa");
   });
 
-  it("sets a warning when the carrier has no directory entry at all", async () => {
+  it("surfaces a third-party restriction and refuses auto-send for it (real Ryanair data)", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ letterText: "Dear Unknown Airline, ..." });
     const node = createDraftClaimNode(deps);
 
-    const unknownCarrierFlightStatus: FlightStatusResult = { ...FLIGHT_STATUS, operatingCarrierIataCode: "ZZ" };
     const result = await node(
-      buildState({ booking: BOOKING, flightStatuses: [unknownCarrierFlightStatus], compensationCents: 60000 }),
+      buildState({
+        booking: BOOKING,
+        flightStatuses: [{ ...FLIGHT_STATUS, operatingCarrierIataCode: "FR" }],
+        compensationCents: 60000,
+      }),
     );
 
-    expect(result.submissionWarning).toContain("don't have a directory entry");
+    expect(result.submission?.thirdPartySubmission).toBe("restricted");
+    expect(result.submission?.autoSendChannel).toBeNull();
+    expect(result.submission?.message).toContain("filed by the passenger directly");
   });
 });
 
-function buildWebFormAirlineDirectory(): AirlineDirectoryProvider {
-  const contact = buildAirlineClaimsContact({
-    carrierIataCode: "FR",
-    carrierName: "Ryanair",
-    submissionMethod: {
-      type: "web_form",
-      formUrl: "https://eu261claims.ryanair.com/",
-      requiredFields: ["fullName", "iban"],
-    },
-  });
-  return {
-    async getAirline(carrierIataCode: string) {
-      return ok({ ...contact, carrierIataCode });
-    },
-    async listAirlines() {
-      return [contact];
-    },
-  };
-}
-
-describe("draft-claim node — web_form carriers get a submission packet, not a letter", () => {
+describe("draft-claim node — web-form carriers get a submission packet, not a letter", () => {
   it("builds a deterministic packet with the link and claim facts, without calling the LLM", async () => {
-    const deps = { llm: new FakeLlmClient(), airlineDirectory: buildWebFormAirlineDirectory(), auditLog: new FakeAuditLog() };
+    const deps = {
+      llm: new FakeLlmClient(),
+      airlineDirectory: buildAnyCodeWebFormAirlineDirectory(["claimantFullName", "payoutIban"]),
+      auditLog: new FakeAuditLog(),
+    };
     const node = createDraftClaimNode(deps);
 
     const result = await node(
-      buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], compensationCents: 60000, eligibilityReason: "Arrival delay of 220 minute(s) meets the 180-minute threshold." }),
+      buildState({
+        booking: BOOKING,
+        flightStatuses: [FLIGHT_STATUS],
+        compensationCents: 60000,
+        eligibilityReason: "Arrival delay of 220 minute(s) meets the 180-minute threshold.",
+      }),
     );
 
     expect(deps.llm.calls).toHaveLength(0);
-    expect(result.draftText).toContain("https://eu261claims.ryanair.com/");
+    expect(result.draftText).toContain("https://airline.example.test/claims");
     expect(result.draftText).toContain("ABC123"); // booking reference
     expect(result.draftText).toContain("Jane Doe");
     expect(result.draftText).toContain("LH456");
     expect(result.draftText).toContain("€600");
     expect(result.draftText).toContain("full name");
     expect(result.draftText).toContain("IBAN");
-    expect(result.submissionWarning).toContain("Ryanair");
+    expect(result.submission?.selection.type).toBe("single");
     expect(deps.auditLog.entries).toHaveLength(1);
     expect(deps.auditLog.entries[0]?.entryType).toBe("system_action");
   });
 
-  it("still uses the LLM-drafted letter path for a rebuttal, even for a web_form carrier (unreachable today, but must fail safe)", async () => {
-    const deps = { llm: new FakeLlmClient(), airlineDirectory: buildWebFormAirlineDirectory(), auditLog: new FakeAuditLog() };
+  it("says so explicitly when nobody has catalogued the form's required fields", async () => {
+    // Distinct from "the form asks for nothing" — claiming the latter about a
+    // form that demands eight fields would be its own kind of confidently wrong.
+    const deps = {
+      llm: new FakeLlmClient(),
+      airlineDirectory: buildAnyCodeWebFormAirlineDirectory(null),
+      auditLog: new FakeAuditLog(),
+    };
+    const node = createDraftClaimNode(deps);
+
+    const result = await node(
+      buildState({ booking: BOOKING, flightStatuses: [FLIGHT_STATUS], compensationCents: 60000 }),
+    );
+
+    expect(result.draftText).toContain("haven't been able to catalogue");
+  });
+
+  it("still uses the LLM-drafted letter path for a rebuttal, even for a web-form carrier (unreachable today, but must fail safe)", async () => {
+    const deps = {
+      llm: new FakeLlmClient(),
+      airlineDirectory: buildAnyCodeWebFormAirlineDirectory(),
+      auditLog: new FakeAuditLog(),
+    };
     deps.llm.enqueueJson({ letterText: "Dear Ryanair, in response to your rejection..." });
     const node = createDraftClaimNode(deps);
 

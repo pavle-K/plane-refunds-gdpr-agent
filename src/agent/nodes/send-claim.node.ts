@@ -1,6 +1,7 @@
 import type { GraphStateType } from "../state.js";
 import type { EmailSendProvider } from "../../providers/email-send/email-send.port.js";
-import type { AirlineDirectoryProvider, ClaimSubmissionMethod } from "../../providers/airline-directory/airline-directory.port.js";
+import type { AirlineDirectoryProvider } from "../../providers/airline-directory/airline-directory.port.js";
+import { buildSubmissionPlan } from "../../providers/airline-directory/submission-plan.js";
 import type { AuditLog } from "../../compliance/audit-log.js";
 
 export interface SendClaimNodeDeps {
@@ -38,22 +39,21 @@ export class MissingSenderAddressError extends Error {
 
 /**
  * Defense in depth, same spirit as ClaimNotApprovedError: draft-claim.node.ts
- * already surfaces a submissionWarning to the human before approval for a
- * non-"email" carrier, but this node refuses independently regardless of
- * whether that warning was shown or heeded — approval alone must never be
- * enough to make this node attempt something it can't actually do. "web_form"
- * carriers aren't automated yet (see the self-updating-submission-agent
- * GitHub issue); "unsupported" carriers have no sourced channel at all.
+ * already tells the human before approval whether this carrier can be dispatched
+ * to, but this node refuses independently regardless of whether that was shown
+ * or heeded — approval alone must never be enough to make this node attempt
+ * something it cannot actually do.
+ *
+ * A carrier has no auto-send channel when it accepts only a web form (not
+ * automated yet — see the self-updating-submission-agent GitHub issue), when its
+ * only address is unverified, when its only email address is a PEC legal mailbox
+ * rather than a claims desk, or when the carrier refuses third-party submissions
+ * outright. buildSubmissionPlan makes that judgement once; this node does not
+ * second-guess it.
  */
 export class ClaimSubmissionNotAutomatedError extends Error {
-  constructor(carrierName: string, method: ClaimSubmissionMethod) {
-    super(
-      method.type === "web_form"
-        ? `sendClaim refused: ${carrierName} requires manual web-form submission (${method.formUrl}) — not automated yet.`
-        : method.type === "unsupported"
-          ? `sendClaim refused: no sourced/verified submission channel for ${carrierName} yet (${method.reason}).`
-          : `sendClaim refused: ${carrierName}'s submission method is not "email".`,
-    );
+  constructor(carrierName: string | null, detail: string) {
+    super(`sendClaim refused: ${carrierName ?? "this carrier"} has no automated submission channel — ${detail}.`);
     this.name = "ClaimSubmissionNotAutomatedError";
   }
 }
@@ -90,20 +90,23 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
     // booking's operatingCarrierCode is often just the flight number's 2-letter
     // prefix (see OperatorTools.startClaim). On a codeshare those disagree
     // (BA1234 operated by Iberia: AeroAPI reports "IB", the prefix says "BA"),
-    // and disagreeing here meant draftClaim could compute submissionWarning for
+    // and disagreeing here meant draftClaim could build a submission plan for
     // one carrier while this node resolved a different one — reopening the
     // "status says sent but nothing was dispatched" bug from the other side.
     const lastFlightStatus = state.flightStatuses[state.flightStatuses.length - 1];
     const carrierCode = lastFlightStatus?.operatingCarrierIataCode ?? lastSegment.operatingCarrierCode;
 
-    const airlineResult = await deps.airlineDirectory.getAirline(carrierCode);
-    if (!airlineResult.ok) {
-      throw new Error(`sendClaim: no airline directory entry for ${carrierCode}`);
-    }
-
-    const { submissionMethod, carrierName } = airlineResult.value;
-    if (submissionMethod.type !== "email") {
-      throw new ClaimSubmissionNotAutomatedError(carrierName, submissionMethod);
+    // One definition of "can this actually be dispatched", shared with
+    // human-approval via state.submission — see buildSubmissionPlan.
+    const plan = buildSubmissionPlan(carrierCode, await deps.airlineDirectory.getAirline(carrierCode));
+    const autoSendChannel = plan.autoSendChannel;
+    if (!autoSendChannel) {
+      throw new ClaimSubmissionNotAutomatedError(
+        plan.carrierName,
+        plan.selection.type === "none_available"
+          ? `no usable channel (${plan.selection.reason})`
+          : "its channels all need a human to submit them",
+      );
     }
 
     if (!deps.fromAddress) {
@@ -112,7 +115,7 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
 
     const flightNumbers = state.booking.segments.map((s) => s.flightNumber).join("/");
     const result = await deps.emailSend.send({
-      to: submissionMethod.claimsEmail,
+      to: autoSendChannel.address,
       from: deps.fromAddress,
       subject: `EC261 Compensation Claim — ${flightNumbers} — ${state.booking.bookingReference}`,
       textBody: state.approvedText,
@@ -125,7 +128,7 @@ export function createSendClaimNode(deps: SendClaimNodeDeps) {
     await deps.auditLog.record({
       claimId: state.claimId,
       entryType: "system_action",
-      payload: { node: "sendClaim", to: submissionMethod.claimsEmail, messageId: result.value.messageId },
+      payload: { node: "sendClaim", to: autoSendChannel.address, messageId: result.value.messageId },
     });
 
     return { sendReceipt: result.value };
