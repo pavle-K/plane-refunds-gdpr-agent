@@ -81,6 +81,23 @@ const envSchema = z.object({
   // requests that didn't actually come from Telegram. Generate any random string.
   TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
 
+  // src/lib/logger.ts. Ordered least to most verbose. No static default here
+  // (see DATABASE_URL's comment for the general reason optional-with-no-default
+  // is used across this file) — src/lib/logger.ts defaults it to "error" under
+  // NODE_ENV=test (so the test suite's real integration paths, which now log
+  // through handleTurn, stay quiet by default) and "info" otherwise. "info" is
+  // the production default because it already answers "did the model call the
+  // tool or not", which is the question that actually needed answering the one
+  // time this repo shipped without any logging at all and a live incident
+  // couldn't be proven either way from the chat transcript alone.
+  LOG_LEVEL: z.enum(["error", "warn", "info", "debug", "trace"]).optional(),
+  // "pretty" (short, human-readable, colorized) vs "json" (one JSON object per
+  // line, for a real log platform). No static default here — src/lib/logger.ts
+  // defaults it from NODE_ENV (pretty in development, json otherwise), same
+  // convention as the NODE_ENV-conditional factories elsewhere in this repo
+  // (e.g. providers/flight-status/index.ts).
+  LOG_FORMAT: z.enum(["pretty", "json"]).optional(),
+
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
 

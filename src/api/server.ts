@@ -15,6 +15,7 @@ import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.j
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
 import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
 import { env } from "../config/env.js";
+import { logger } from "../lib/logger.js";
 
 async function main() {
   const llm = createLlmClient();
@@ -24,7 +25,7 @@ async function main() {
     );
   }
 
-  console.log("Setting up checkpointer against real Postgres...");
+  logger.info("setting up checkpointer against real Postgres");
   await setupCheckpointer();
 
   const app = express();
@@ -44,7 +45,7 @@ async function main() {
   app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(llm));
 
   const server = app.listen(env.PORT, () => {
-    console.log(`API listening on :${env.PORT} (LLM_PROVIDER=${env.LLM_PROVIDER})`);
+    logger.info("API listening", { port: env.PORT, llmProvider: env.LLM_PROVIDER, logLevel: env.LOG_LEVEL });
   });
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -59,6 +60,6 @@ async function main() {
 }
 
 main().catch((cause) => {
-  console.error("FAILED to start server:", cause);
+  logger.error("server failed to start", { cause: String(cause) });
   process.exit(1);
 });
