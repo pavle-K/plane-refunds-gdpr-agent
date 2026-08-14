@@ -6,6 +6,7 @@ export function buildState(overrides: Partial<GraphStateType> = {}): GraphStateT
     claimStatus: "draft",
     rawEmailText: null,
     booking: null,
+    claimant: null,
     flightStatuses: [],
     eligible: null,
     eligibilityReason: null,

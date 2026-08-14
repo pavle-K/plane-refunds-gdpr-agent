@@ -228,3 +228,54 @@ export const airports = pgTable("airports", {
   createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
   updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The person filing claims, collected once and reused — without it every claim
+ * letter and submission packet renders with unfilled brackets and an "Unknown
+ * Passenger" placeholder, and the agent has to notice that gap ad hoc in
+ * conversation with nothing enforcing it.
+ *
+ * One row per user, not per passenger: the assumption is that the person
+ * talking to the bot is claiming for themselves. Where an airline also wants
+ * co-passengers' details (British Airways does), the user supplies those on the
+ * airline's own form — see the claim-fields vocabulary, which classifies
+ * co-passenger facts as per-claim rather than profile data.
+ *
+ * iban/bic are stored ENCRYPTED (src/lib/crypto.ts), same pattern as
+ * email_connections' OAuth tokens: encrypted at the repository boundary, so
+ * PassengerProfileRepo's interface deals in plaintext and nothing above it
+ * knows. Consequence worth remembering: an encrypted column is not searchable,
+ * so never key a lookup on one.
+ *
+ * Unlike a claim, a profile is not itself a legal record of a transaction — a
+ * sent claim's letter text already carries the name and address into the audit
+ * trail. So forget_my_data deletes this unconditionally, with none of the
+ * "was it already sent?" reasoning that governs claims.
+ */
+export const passengerProfiles = pgTable(
+  "passenger_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    fullName: text("full_name").notNull(),
+    // Address lines are split rather than free-text so a submission packet can
+    // present them the way a form asks for them, field by field.
+    addressLine1: text("address_line1"),
+    addressLine2: text("address_line2"),
+    city: text("city"),
+    postalCode: text("postal_code"),
+    countryIsoCode: text("country_iso_code"),
+    contactEmail: text("contact_email").notNull(),
+    phone: text("phone"),
+    // Nullable because a profile is useful before bank details are known: a user
+    // can check eligibility and see the form URL without ever handing over an
+    // IBAN. Only asked for when a specific carrier's form actually requires it.
+    encryptedIban: text("encrypted_iban"),
+    encryptedBic: text("encrypted_bic"),
+    createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+    updatedAtUtc: timestamp("updated_at_utc", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique().on(table.userId)],
+);
