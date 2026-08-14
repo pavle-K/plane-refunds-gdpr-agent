@@ -110,6 +110,13 @@ const envSchema = z.object({
   // same reasoning applies here. Only override for self-hosted or the US region.
   LANGFUSE_HOST: z.string().url().optional(),
 
+  // src/agent/llm/history.ts — max estimated tokens of prior conversation
+  // replayed on every turn. A real conversation (trace.log, 2026-08-14) hit
+  // the old fixed 40-turn cap while including a full drafted claim letter,
+  // making every subsequent request enormous. Token-based, not count-based,
+  // since turn length varies from "yes" to a full letter.
+  MAX_HISTORY_TOKENS: z.coerce.number().int().positive().default(6000),
+
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
 

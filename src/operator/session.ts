@@ -9,6 +9,8 @@ import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply, CON
 import { TOOL_DEFINITIONS, OperatorTools, describeConfirmedActionResult } from "./tools.js";
 import { logger, type Logger } from "../lib/logger.js";
 import { createTracer, type Tracer } from "../agent/llm/index.js";
+import { truncateHistoryByTokens } from "../agent/llm/history.js";
+import { env } from "../config/env.js";
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
 
@@ -216,9 +218,13 @@ export async function handleTurn(
     sessionId: channelIdentityId,
     metadata: { channel: turn.channel, turnId },
   });
+  // Full `history` (not the truncated view) is what noticeAlreadyShown above
+  // checked — that has to see the whole record, or an old identity could get
+  // shown the consent notice again just because it scrolled out of the token
+  // budget. The LLM call itself only needs what fits that budget.
   const { responseText, toolCallCount } = await runLlmTurn(llm, {
     prompt: turn.text,
-    history,
+    history: truncateHistoryByTokens(history, env.MAX_HISTORY_TOKENS),
     tools,
     log,
     tracer,
@@ -277,7 +283,13 @@ export async function resumeConversationAfterEmailConnected(
     metadata: { source: "email_connected_resume", turnId },
   });
 
-  const { responseText, toolCallCount } = await runLlmTurn(llm, { prompt: note, history, tools, log, tracer });
+  const { responseText, toolCallCount } = await runLlmTurn(llm, {
+    prompt: note,
+    history: truncateHistoryByTokens(history, env.MAX_HISTORY_TOKENS),
+    tools,
+    log,
+    tracer,
+  });
 
   await repo.appendTurn(params.channelIdentityId, "user", note);
   await repo.appendTurn(params.channelIdentityId, "assistant", responseText);
