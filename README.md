@@ -18,6 +18,7 @@ Most eligible passengers never claim the compensation they're owed because the p
 - [Connecting messaging channels](#connecting-messaging-channels)
 - [Running it](#running-it)
 - [Testing](#testing)
+- [Testing prompts (evals)](#testing-prompts-evals)
 - [Project status](#project-status)
 - [Legal & compliance disclaimer](#legal--compliance-disclaimer)
 
@@ -125,6 +126,8 @@ src/
 scripts/           # CLI entry points — chat, claim:start/resume, email:connect/check
 tests/
   unit/            # mirrors src/ file-for-file
+  evals/           # prompt regression suite (npm run test:prompts) — calls a REAL LLM,
+                   #   deliberately excluded from `npm test` / CI, see Testing prompts below
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the full design rationale and the staged build plan this repo follows.
@@ -295,6 +298,74 @@ npm run lint
 Two hard rules the test suite follows throughout: **no test hits a live API or sends a real email** (every provider has a fake adapter, used everywhere), and **no test makes a real LLM call** (`FakeLlmClient` is used instead — deterministic, queue-based canned responses).
 
 The highest-value tests are in `tests/unit/domain/` — pure functions covering EC261 eligibility, compensation bands (with exact boundary values, since an off-by-one here is a real money bug), and the claim state machine. `tests/unit/agent/nodes/human-approval.node.test.ts` is arguably the most important single test in the project: it asserts the graph genuinely interrupts and that nothing is sent before an explicit human decision comes back.
+
+---
+
+## Testing prompts (evals)
+
+`npm test` never makes a real LLM call (see [Testing](#testing) above) — so it can't answer
+the question that actually matters for `src/operator/prompt.md`: **does the model reliably
+call the right tool?** That's a separate suite, `tests/evals/`, built after a real incident
+where the operator fabricated an entire fake data-deletion flow instead of calling
+`forget_my_data` — and where a single-turn chat transcript alone wasn't enough to prove
+whether the tool had been called at all.
+
+```bash
+npm run test:prompts
+```
+
+Runs every case in `tests/evals/cases/` against `src/operator/prompt.md` and your
+configured `LLM_PROVIDER`, 3 trials each by default. This costs real API calls and is
+non-deterministic by nature (the same case can pass on one trial and fail on the next —
+that variance *is* the signal), so it's **never run in CI** — `vitest.config.ts`'s
+`include` is scoped to `tests/unit/` and `tests/integration/` only, and `tests/evals/`
+falls outside it on purpose. You run this by hand, whenever you want to check.
+
+**What actually gets sent to the model.** One case = one realistic turn: the *entire*
+system prompt (whichever file you're testing, with the same "Current date and time"
+suffix the real bot appends), the *entire* real 14-tool list from
+`src/operator/tools.ts` (never narrowed down to "just the tool being tested"), and the
+case's message. If the model calls a tool, the call is intercepted — recorded, then
+handed back a plausible fake result — so nothing ever touches real Postgres, sends a
+real email, or starts a real deletion. The case's `assert()` then scores what actually
+got called.
+
+**Flags:**
+
+```bash
+npm run test:prompts -- --trials 5                      # more trials than the default 3
+npm run test:prompts -- --cases forget-my-data.single-turn,approval-gate.explicit-approval-is-honoured
+npm run test:prompts -- --prompt path/to/candidate.md    # test a candidate file instead of the live one
+npm run test:prompts -- --compare old.md new.md          # run both, print them side by side
+```
+
+**Coverage is only what's been written as a case — not automatic.** Right now
+`tests/evals/cases/` covers `forget_my_data`, `submit_approval_decision`, and
+`start_claim`; the other tools have none. To add coverage for a tool, drop a new file in
+`tests/evals/cases/` following the existing ones' shape and list its exported array in
+`tests/evals/cases/index.ts`:
+
+```ts
+{
+  id: "disconnect-email.question-is-not-a-request",
+  description: "A privacy question must not be read as a disconnect request.",
+  message: "what happens if I disconnect my email?",
+  assert: assertions.neverCalled("disconnect_email"),
+}
+```
+
+**Langfuse (optional).** Set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` in `.env` and two
+things happen automatically, no flags needed: every real operator turn (`npm run chat`,
+`npm run server`) gets traced — one trace per turn, the LLM call as a `generation`, each
+tool dispatch as a `span` — and every eval run gets pushed to Langfuse's Dataset feature
+under a named run (auto-generated, or `--langfuse-run <name>`), so two runs (e.g. before
+and after a prompt rewrite) can be compared side by side in Langfuse's own UI, not just in
+this script's console table. Unset, both silently no-op — same "falls back when
+unconfigured" convention as every other provider in this repo. `LANGFUSE_HOST` defaults
+to Langfuse Cloud's **EU region**: this project keeps its Postgres in Frankfurt
+specifically for EU data residency, and a trace can carry a full raw prompt — which
+includes passenger PII pulled from a real conversation — so the same reasoning applies
+here.
 
 ---
 

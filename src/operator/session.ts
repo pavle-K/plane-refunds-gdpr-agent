@@ -8,6 +8,7 @@ import { PendingConfirmationRepo } from "../db/repositories/pending-confirmation
 import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply, CONSENT_NOTICE } from "../compliance/consent.js";
 import { TOOL_DEFINITIONS, OperatorTools, describeConfirmedActionResult } from "./tools.js";
 import { logger, type Logger } from "../lib/logger.js";
+import { createTracer, type Tracer } from "../agent/llm/index.js";
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
 
@@ -35,6 +36,14 @@ function buildSystemPrompt(): string {
  * before being handed back to the model as the same {error} string as
  * before — this used to be silently swallowed with no server-side trace at
  * all.
+ *
+ * Also records onto `tracer` (Langfuse, or a no-op — see
+ * agent/llm/tracing.adapter.ts): each tool dispatch as a `span`, and the whole
+ * completeWithTools call as a `generation`, both on the ONE trace the caller
+ * created for this turn. This is queryable, persistent observability
+ * (filterable/comparable in Langfuse's UI); `log` above is the local/immediate
+ * text-log equivalent. Both are populated from the same data on purpose —
+ * they serve different consumption modes, not redundant copies of one thing.
  */
 async function runLlmTurn(
   llm: LlmClient,
@@ -43,13 +52,16 @@ async function runLlmTurn(
     history: LlmConversationTurn[];
     tools: OperatorTools;
     log: Logger;
+    tracer: Tracer;
     onToolCall?: (call: { name: string; input: Record<string, unknown> }) => void;
   },
 ): Promise<{ responseText: string; toolCallCount: number }> {
   let toolCallCount = 0;
+  const system = buildSystemPrompt();
+  const startedAt = Date.now();
 
   const responseText = await llm.completeWithTools({
-    system: buildSystemPrompt(),
+    system,
     prompt: params.prompt,
     tools: TOOL_DEFINITIONS,
     history: params.history,
@@ -60,12 +72,21 @@ async function runLlmTurn(
       try {
         const result = await params.tools.dispatch(call.name, call.input);
         params.log.debug("tool result", { tool: call.name, input: call.input, result });
+        params.tracer.span({ name: call.name, input: call.input, output: result });
         return JSON.stringify(result);
       } catch (cause) {
         params.log.error("tool dispatch threw", { tool: call.name, input: call.input, cause: String(cause) });
+        params.tracer.span({ name: call.name, input: call.input, output: { error: String(cause) } });
         return JSON.stringify({ error: String(cause) });
       }
     },
+  });
+
+  params.tracer.generation({
+    name: "operator.completeWithTools",
+    input: { system, prompt: params.prompt, historyLength: params.history.length },
+    output: responseText,
+    durationMs: Date.now() - startedAt,
   });
 
   return { responseText, toolCallCount };
@@ -185,11 +206,22 @@ export async function handleTurn(
   }
 
   const tools = new OperatorTools(userId, channelIdentityId);
+  // One trace per turn (Langfuse, or a no-op when unconfigured — see
+  // agent/llm/tracing.adapter.ts). sessionId groups every turn of one
+  // conversation together in Langfuse's UI; channelIdentityId is exactly that
+  // grouping key already (unique per channel+externalId, see schema.ts).
+  const tracer = createTracer({
+    name: "operator.turn",
+    userId,
+    sessionId: channelIdentityId,
+    metadata: { channel: turn.channel, turnId },
+  });
   const { responseText, toolCallCount } = await runLlmTurn(llm, {
     prompt: turn.text,
     history,
     tools,
     log,
+    tracer,
     ...(turn.onToolCall ? { onToolCall: turn.onToolCall } : {}),
   });
 
@@ -238,8 +270,14 @@ export async function resumeConversationAfterEmailConnected(
   const history = await repo.loadHistory(params.channelIdentityId);
   const tools = new OperatorTools(params.userId, params.channelIdentityId);
   const note = buildEmailConnectedNote(params.emailAddress);
+  const tracer = createTracer({
+    name: "operator.turn",
+    userId: params.userId,
+    sessionId: params.channelIdentityId,
+    metadata: { source: "email_connected_resume", turnId },
+  });
 
-  const { responseText, toolCallCount } = await runLlmTurn(llm, { prompt: note, history, tools, log });
+  const { responseText, toolCallCount } = await runLlmTurn(llm, { prompt: note, history, tools, log, tracer });
 
   await repo.appendTurn(params.channelIdentityId, "user", note);
   await repo.appendTurn(params.channelIdentityId, "assistant", responseText);

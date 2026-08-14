@@ -10,7 +10,7 @@
  */
 import express from "express";
 import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
-import { createLlmClient, FakeLlmClient } from "../agent/llm/index.js";
+import { createLlmClient, FakeLlmClient, flushTracing } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
 import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
@@ -51,9 +51,10 @@ async function main() {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       server.close(() => {
-        void getCheckpointer()
-          .end()
-          .finally(() => process.exit(0));
+        // Langfuse batches trace events and flushes on an internal timer —
+        // without this, whatever's queued from the last few turns before
+        // shutdown is silently lost. No-ops when Langfuse isn't configured.
+        void Promise.all([getCheckpointer().end(), flushTracing()]).finally(() => process.exit(0));
       });
     });
   }

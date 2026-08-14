@@ -98,6 +98,18 @@ const envSchema = z.object({
   // (e.g. providers/flight-status/index.ts).
   LOG_FORMAT: z.enum(["pretty", "json"]).optional(),
 
+  // Langfuse — LLM tracing (production observability) and dataset-driven prompt
+  // evals (tests/evals/). Both optional, same fallback convention as every other
+  // provider here: unset means src/agent/llm/langfuse-client.ts hands back null
+  // and tracing/eval-reporting silently no-ops, never blocking a turn or a run.
+  LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
+  LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
+  // Defaults to Langfuse Cloud's EU region if unset. This project keeps its
+  // Postgres in Frankfurt specifically for EU data residency (CLAUDE.md
+  // Stage 0) — traces carry raw prompts, which include passenger PII, so the
+  // same reasoning applies here. Only override for self-hosted or the US region.
+  LANGFUSE_HOST: z.string().url().optional(),
+
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
 

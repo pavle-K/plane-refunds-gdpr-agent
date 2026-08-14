@@ -16,6 +16,8 @@ export { GoogleLlmClient } from "./providers/google.adapter.js";
 export { OpenAiCompatibleLlmClient } from "./providers/openai-compatible.adapter.js";
 export type { OpenAiCompatibleConfig } from "./providers/openai-compatible.adapter.js";
 export { LoggingLlmClient } from "./logging.adapter.js";
+export { createTracer, flushTracing, type Tracer, type TurnContext } from "./tracing.adapter.js";
+export { getLangfuseClient } from "./langfuse-client.js";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const XAI_BASE_URL = "https://api.x.ai/v1";
