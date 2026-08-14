@@ -6,7 +6,8 @@ import type { AirlineDirectoryProvider } from "../../providers/airline-directory
 import { buildSubmissionPlan, type SubmissionPlan } from "../../providers/airline-directory/submission-plan.js";
 import type { Booking } from "../../domain/claim/claim.types.js";
 import type { FlightStatusResult } from "../../providers/flight-status/flight-status.port.js";
-import { resolvePrefill, type KnownClaimFacts, type PrefillResult } from "../../domain/claim/prefill.js";
+import { resolvePrefill, type PrefillResult } from "../../domain/claim/prefill.js";
+import { toKnownClaimFacts, formatEuros } from "../claim-facts.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
 
@@ -31,12 +32,6 @@ export class MissingClaimantDetailsError extends Error {
   }
 }
 
-function formatEuros(cents: number): string {
-  // EC261 compensation bands are always whole euros (€250/€400/€600) — see
-  // domain/ec261/compensation.ts — so no decimal formatting is needed here.
-  return `€${Math.round(cents / 100)}`;
-}
-
 function buildItineraryLines(flightStatuses: FlightStatusResult[]): string {
   return flightStatuses
     .map((s) => {
@@ -49,29 +44,6 @@ function buildItineraryLines(flightStatuses: FlightStatusResult[]): string {
       return `  - ${s.flightNumber}: ${s.departureAirportIata} -> ${s.arrivalAirportIata}, scheduled ${s.scheduledDepartureUtc.slice(0, 10)}${disruption}`;
     })
     .join("\n");
-}
-
-/**
- * The claim facts the pipeline already holds, in the canonical vocabulary the
- * prefill resolver speaks.
- */
-function toKnownClaimFacts(params: {
-  booking: Booking;
-  flightStatuses: FlightStatusResult[];
-  compensationCents: number;
-}): KnownClaimFacts {
-  const { booking, flightStatuses, compensationCents } = params;
-  const names = booking.passengers.map((p) => p.fullName).filter((n): n is string => Boolean(n?.trim()));
-
-  return {
-    bookingReference: booking.bookingReference,
-    flightItinerary: flightStatuses
-      .map((s) => `${s.flightNumber} ${s.departureAirportIata}-${s.arrivalAirportIata} on ${s.scheduledDepartureUtc.slice(0, 10)}`)
-      .join("; "),
-    disruptionType: flightStatuses.some((s) => s.status === "cancelled") ? "cancellation" : "delay",
-    ...(names.length > 0 ? { passengerNames: names.join(", ") } : {}),
-    compensationAmount: formatEuros(compensationCents),
-  };
 }
 
 function renderPrefill(prefill: PrefillResult): string {

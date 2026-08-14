@@ -16,6 +16,12 @@ import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repos
 import { DbAuditLog } from "../compliance/audit-log.js";
 import { createEmailIngestProvider, FakeEmailIngestAdapter } from "../providers/email-ingest/index.js";
 import { toOperatorAirlineView } from "../providers/airline-directory/submission-plan.js";
+import { buildClaimPdf, claimPdfFilename } from "../lib/claim-pdf.js";
+import { resolvePrefill } from "../domain/claim/prefill.js";
+import { toKnownClaimFacts, formatItineraryLines, formatEuros } from "../agent/claim-facts.js";
+import { createChannelAdapter } from "../channels/index.js";
+import { env } from "../config/env.js";
+import type { GraphStateType } from "../agent/state.js";
 import { looksLikeBookingEmail } from "../providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import type { Booking } from "../domain/claim/claim.types.js";
@@ -162,6 +168,18 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
       "A carrier with no channel listed genuinely has none on record: say it isn't supported, don't go looking " +
       "for a form URL from memory.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "send_postal_pack",
+    description:
+      "Generates a printable, prefilled EC261 claim form as a PDF and sends it to the user, by email and in " +
+      "this chat. Only for a carrier whose submission plan includes a POSTAL route. This does NOT submit " +
+      "anything to the airline and does not need approval — it hands the user a document to print, sign and " +
+      "post themselves. Call it only when the user has said they want the postal route (or both routes).",
+    inputSchema: {
+      type: "object",
+      properties: { threadId: { type: "string", description: "Omit to use the most recently touched claim." } },
+    },
   },
   {
     name: "get_passenger_profile",
@@ -341,6 +359,8 @@ export class OperatorTools {
         return this.getClaimStatus(input["threadId"] as string | undefined);
       case "list_supported_airlines":
         return this.listSupportedAirlines();
+      case "send_postal_pack":
+        return this.sendPostalPack(input["threadId"] as string | undefined);
       case "get_passenger_profile":
         return this.getPassengerProfile();
       case "save_passenger_profile":
@@ -864,6 +884,116 @@ export class OperatorTools {
       submission: state.values.submission,
       escalationReason: state.values.escalationReason,
       payout: state.values.payout,
+    };
+  }
+
+  /**
+   * Builds the print-and-post claim form and delivers it.
+   *
+   * Deliberately NOT a submission: it never touches claimStatus, never resumes
+   * the graph, and never goes near the approval gate. Handing someone a document
+   * to print is not the same act as dispatching a claim to an airline, and
+   * conflating the two is how a checkpoint ends up claiming "sent" when nothing
+   * was. The claim's own status is whatever draftClaim left it as.
+   */
+  private async sendPostalPack(threadId?: string) {
+    const id = await this.resolveThreadId(threadId);
+    const state = await this.graph.getState(this.config(id));
+    const values = state.values as GraphStateType;
+
+    const plan = values.submission;
+    const postal = plan?.channels.find((channel) => channel.kind === "postal" && channel.postalAddress);
+    if (!plan || !postal?.postalAddress) {
+      return {
+        error:
+          "This carrier has no postal route on record, so there's nothing to print and post. Use the route(s) " +
+          "listed in the claim's submission plan instead.",
+      };
+    }
+    if (!values.booking || values.compensationCents === null) {
+      return { error: "This claim hasn't been drafted yet — run start_claim first." };
+    }
+
+    const profile = await new PassengerProfileRepo().findByUserId(this.userId);
+    const claimant = profile ? toClaimantFacts(profile) : {};
+    // Same mapping the drafting node uses. Writing it out again here is what
+    // previously left the itinerary out, so the printed form showed the flight
+    // at the top AND asked for it again at the bottom.
+    const claimFacts = toKnownClaimFacts({
+      booking: values.booking,
+      flightStatuses: values.flightStatuses,
+      compensationCents: values.compensationCents,
+    });
+    const itineraryLines = formatItineraryLines(values.flightStatuses);
+    const prefill = resolvePrefill(postal.requiredFieldKeys, claimFacts, claimant);
+
+    const pdf = await buildClaimPdf({
+      carrierName: plan.carrierName ?? "the airline",
+      carrierAddressLines: postal.postalAddress,
+      bookingReference: values.booking.bookingReference,
+      itineraryLines,
+      compensationText: formatEuros(values.compensationCents),
+      eligibilityReason: values.eligibilityReason,
+      prefill,
+      todayIso: new Date().toISOString().slice(0, 10),
+    });
+
+    const filename = claimPdfFilename(values.booking.bookingReference);
+    const delivered: string[] = [];
+    const failed: string[] = [];
+
+    // Chat first: it's the conversation the user is already in, and it needs no
+    // configuration beyond the channel they're talking on.
+    const identity = await new ConversationRepo().findChannelIdentity(this.channelIdentityId);
+    const adapter = identity ? createChannelAdapter(identity.channel) : null;
+    if (identity && adapter?.sendDocument) {
+      const sent = await adapter.sendDocument(
+        identity.externalId,
+        { filename, content: pdf, contentType: "application/pdf" },
+        `Your EC261 claim form for ${plan.carrierName ?? "this airline"} — print, sign and post it.`,
+      );
+      if (sent.ok) delivered.push("this chat");
+      else failed.push(`this chat (${sent.error.type})`);
+    }
+
+    // Email second: needs both a verified sender and somewhere to send it.
+    const recipient = profile?.contactEmail;
+    if (recipient && env.CLAIM_SENDER_EMAIL) {
+      const sent = await this.deps.emailSend.send({
+        to: recipient,
+        from: env.CLAIM_SENDER_EMAIL,
+        subject: `Your EC261 claim form — ${values.booking.bookingReference}`,
+        textBody:
+          `Attached is your EC261 compensation claim for ${plan.carrierName ?? "the airline"}, ready to print ` +
+          `and post to:\n\n${postal.postalAddress.join("\n")}\n\n` +
+          "Check it over, fill in anything left blank, sign it, and send it. This has not been submitted for you.",
+        attachments: [{ filename, content: pdf, contentType: "application/pdf" }],
+      });
+      if (sent.ok) delivered.push(recipient);
+      else failed.push(`email (${sent.error.type})`);
+    } else if (!recipient) {
+      failed.push("email (no contact email saved — ask for one and call save_passenger_profile)");
+    } else {
+      failed.push("email (this deployment has no sender address configured)");
+    }
+
+    await new DbAuditLog().record({
+      claimId: id,
+      userId: this.userId,
+      entryType: "system_action",
+      payload: { node: "sendPostalPack", filename, delivered, failed },
+    });
+
+    return {
+      threadId: id,
+      generated: true as const,
+      postalAddress: postal.postalAddress,
+      deliveredTo: delivered,
+      failed,
+      outstandingFields: [...prefill.missingFromProfile, ...prefill.missingPerClaim].map((f) => f.label),
+      note:
+        "This is a document for the user to print, sign and post themselves. Nothing has been submitted to the " +
+        "airline, and the claim's status is unchanged.",
     };
   }
 

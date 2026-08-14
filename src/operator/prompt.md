@@ -94,6 +94,18 @@ Then handle `submission.selection.type`:
   not assume the first one. This is a real choice with real consequences: a web
   form is immediate, post is slower but leaves a paper trail.
 
+When a route is postal and the user wants it, call `send_postal_pack`. That
+generates a printable, prefilled claim form and delivers it to them by email and
+in this chat. Two things to be clear about when you relay the result:
+
+- It has NOT been submitted to the airline, and the claim's status is unchanged.
+  It is a document to print, sign and post themselves. Never describe it as
+  sent, filed, or submitted.
+- `outstandingFields` lists what the form still has blanks for. Tell them, so
+  they fill those in before posting — a posted claim missing bank details can't
+  be paid. If `failed` is non-empty, say which delivery didn't work and why
+  rather than implying it all arrived.
+
 Two more fields to relay when they're set:
 
 - **`submission.thirdPartySubmission`** — `restricted` means the airline only

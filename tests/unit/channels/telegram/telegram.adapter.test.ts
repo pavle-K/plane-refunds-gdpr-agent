@@ -100,4 +100,67 @@ describe("TelegramAdapter", () => {
       expect(result.error.type).toBe("upstream_error");
     }
   });
+
+  it("sends a document as multipart/form-data, not the JSON body sendMessage uses", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: { body: unknown }) => {
+        calls.push({ url, body: init.body });
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }),
+    );
+
+    const result = await new TelegramAdapter("token").sendDocument!(
+      "12345",
+      { filename: "claim.pdf", content: Buffer.from("%PDF-1.7"), contentType: "application/pdf" },
+      "Your claim form",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls[0]?.url).toContain("/sendDocument");
+    expect(calls[0]?.body).toBeInstanceOf(FormData);
+
+    const form = calls[0]?.body as FormData;
+    expect(form.get("chat_id")).toBe("12345");
+    expect(form.get("caption")).toBe("Your claim form");
+    const file = form.get("document") as File;
+    expect(file.name).toBe("claim.pdf");
+    expect(file.type).toBe("application/pdf");
+    expect(await file.text()).toBe("%PDF-1.7");
+  });
+
+  it("strips markdown links out of a caption, same as message text", async () => {
+    // No parse_mode is set on either call, so a wrapped link renders as literal
+    // brackets rather than something clickable.
+    const calls: { body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: unknown }) => {
+        calls.push({ body: init.body });
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }),
+    );
+
+    await new TelegramAdapter("token").sendDocument!(
+      "12345",
+      { filename: "claim.pdf", content: Buffer.from("x"), contentType: "application/pdf" },
+      "See [their form](https://example.test/claim)",
+    );
+
+    expect((calls[0]?.body as FormData).get("caption")).toBe("See https://example.test/claim");
+  });
+
+  it("maps a document send failure the same way a message send failure is mapped", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 429, ok: false, json: async () => ({ ok: false }) })));
+
+    const result = await new TelegramAdapter("token").sendDocument!("12345", {
+      filename: "claim.pdf",
+      content: Buffer.from("x"),
+      contentType: "application/pdf",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.type).toBe("rate_limited");
+  });
 });
