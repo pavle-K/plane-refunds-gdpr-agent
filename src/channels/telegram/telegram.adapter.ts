@@ -1,10 +1,25 @@
 import { ok, err, type Result } from "../../lib/result.js";
-import type { ChannelAdapter, ChannelSendError } from "../channel.port.js";
+import type { ChannelAdapter, ChannelSendError, OutboundDocument } from "../channel.port.js";
 
 interface TelegramApiResponse {
   ok: boolean;
   error_code?: number;
   description?: string;
+}
+
+/**
+ * Defense-in-depth against Markdown-formatted links, e.g. `[label](url)` —
+ * prompt.md tells the LLM to always give a bare URL instead (see its "Links"
+ * rule) precisely because this send call has no parse_mode set, so Telegram
+ * displays Markdown syntax as broken literal text rather than a clickable
+ * link. That's a prompt instruction, not a guarantee — a model can still slip
+ * and wrap a link anyway, and for something like an OAuth authorization URL
+ * that's not a cosmetic issue, it makes the link fail outright. This strips
+ * the wrapper and keeps just the URL, regardless of whether the model
+ * followed the instruction.
+ */
+function stripMarkdownLinks(text: string): string {
+  return text.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, "$2");
 }
 
 /**
@@ -22,12 +37,51 @@ export class TelegramAdapter implements ChannelAdapter {
       response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: externalUserId, text }),
+        body: JSON.stringify({ chat_id: externalUserId, text: stripMarkdownLinks(text) }),
       });
     } catch (cause) {
       return err({ type: "upstream_error", message: `Network error calling Telegram: ${String(cause)}` });
     }
 
+    return this.interpretResponse(response);
+  }
+
+  /**
+   * sendDocument can't reuse sendMessage's JSON body — Telegram needs
+   * multipart/form-data with the file part. The caption goes through
+   * stripMarkdownLinks for the same reason message text does: no parse_mode is
+   * set, so Markdown syntax would render as literal brackets.
+   *
+   * Telegram's bot limit is 50MB; a claim form is a couple of pages, so this
+   * doesn't guard on size the way the email path has to.
+   */
+  async sendDocument(
+    externalUserId: string,
+    document: OutboundDocument,
+    caption?: string,
+  ): Promise<Result<void, ChannelSendError>> {
+    const form = new FormData();
+    form.append("chat_id", externalUserId);
+    form.append("document", new Blob([new Uint8Array(document.content)], { type: document.contentType }), document.filename);
+    if (caption) {
+      form.append("caption", stripMarkdownLinks(caption));
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
+        method: "POST",
+        body: form,
+      });
+    } catch (cause) {
+      return err({ type: "upstream_error", message: `Network error calling Telegram: ${String(cause)}` });
+    }
+
+    return this.interpretResponse(response);
+  }
+
+  /** Shared status/body handling — identical for sendMessage and sendDocument. */
+  private async interpretResponse(response: Response): Promise<Result<void, ChannelSendError>> {
     if (response.status === 401 || response.status === 403) {
       return err({ type: "auth_error", message: "Telegram rejected the bot token" });
     }

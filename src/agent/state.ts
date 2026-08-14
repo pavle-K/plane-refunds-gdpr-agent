@@ -4,6 +4,8 @@ import type { ExtraordinaryCauseCode, ExtraordinaryVerdict } from "../domain/ec2
 import type { FlightStatusResult } from "../providers/flight-status/flight-status.port.js";
 import type { WeatherObservation } from "../providers/weather/weather.port.js";
 import type { DisruptionEvent } from "../providers/disruption/disruption.port.js";
+import type { SubmissionPlan } from "../providers/airline-directory/submission-plan.js";
+import type { KnownProfileFacts } from "../domain/claim/prefill.js";
 
 export interface ClaimScore {
   successLikelihood: number;
@@ -44,6 +46,14 @@ export const GraphState = Annotation.Root({
   /** Raw email body, when the graph is invoked from an inbox rather than an upload. */
   rawEmailText: Annotation<string | null>(overwrite<string | null>(null)),
   booking: Annotation<Booking | null>(overwrite<Booking | null>(null)),
+  /**
+   * The stored passenger profile, supplied by the caller rather than looked up
+   * here: the graph has no notion of a user (there is no userId in this state),
+   * so only the user-scoped operator layer can resolve it. Null means no profile
+   * is saved yet, which is a normal early state, not an error — draftClaim
+   * reports the resulting gaps instead of inventing values for them.
+   */
+  claimant: Annotation<KnownProfileFacts | null>(overwrite<KnownProfileFacts | null>(null)),
 
   /** One entry per booking.segments[], same order. First = first departure, last = final arrival. */
   flightStatuses: Annotation<FlightStatusResult[]>(overwrite<FlightStatusResult[]>([])),
@@ -59,6 +69,26 @@ export const GraphState = Annotation.Root({
   score: Annotation<ClaimScore | null>(overwrite<ClaimScore | null>(null)),
 
   draftText: Annotation<string | null>(overwrite<string | null>(null)),
+  /**
+   * How this claim can actually reach the airline — which channels exist,
+   * whether the human has to choose between them, whether anything can be
+   * dispatched automatically, and the sentence explaining all of that. Set by
+   * draftClaim from the airline directory.
+   *
+   * Replaces the old `submissionWarning: string | null`. That was a single
+   * human-readable string that two very different consumers both keyed off:
+   * human-approval treated "any string at all" as "cannot auto-send", and the
+   * operator relayed it as prose. With several channels per carrier, neither
+   * question has a string answer any more.
+   *
+   * CHECKPOINT COMPATIBILITY: claims already in flight were checkpointed with
+   * `submissionWarning` and no `submission`, so on resume this hydrates as
+   * null. That is the fail-safe direction — a null plan has no autoSendChannel,
+   * so human-approval routes to needs_manual_submission rather than claiming a
+   * send happened. An in-flight claim gets downgraded to a manual handoff, never
+   * silently dispatched.
+   */
+  submission: Annotation<SubmissionPlan | null>(overwrite<SubmissionPlan | null>(null)),
   approvalDecision: Annotation<ApprovalDecision | null>(overwrite<ApprovalDecision | null>(null)),
   approvedText: Annotation<string | null>(overwrite<string | null>(null)),
 

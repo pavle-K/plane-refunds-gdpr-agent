@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { GoogleLlmClient } from "../../../../../src/agent/llm/providers/google.adapter.js";
+import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
 
 function mockFetchOnce(body: unknown, status = 200) {
   const fn = vi.fn().mockResolvedValue({
@@ -54,6 +55,36 @@ describe("GoogleLlmClient", () => {
 
       await expect(client.complete({ system: "s", prompt: "p" })).rejects.toThrow(/no text part/);
     });
+
+    it("throws LlmRateLimitedError with the parsed retry delay on a 429", async () => {
+      mockFetchOnce(
+        {
+          error: {
+            code: 429,
+            message: "quota exceeded",
+            details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "37.552280594s" }],
+          },
+        },
+        429,
+      );
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.provider).toBe("Gemini");
+      expect(error.retryAfterSeconds).toBeCloseTo(37.55, 1);
+    });
+
+    it("throws LlmRateLimitedError with no retry hint when the body doesn't include one", async () => {
+      mockFetchOnce({ error: { code: 429, message: "quota exceeded" } }, 429);
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      const error = (await client.complete({ system: "s", prompt: "p" }).catch((e: unknown) => e)) as LlmRateLimitedError;
+
+      expect(error).toBeInstanceOf(LlmRateLimitedError);
+      expect(error.retryAfterSeconds).toBeUndefined();
+    });
   });
 
   describe("completeWithTools", () => {
@@ -74,6 +105,26 @@ describe("GoogleLlmClient", () => {
 
       expect(result).toBe("done");
       expect(onToolCall).toHaveBeenCalledWith({ name: "lookup", input: { x: 1 } });
+    });
+
+    it("sends the function result back with role 'user', not 'function' (Gemini has no such role)", async () => {
+      const fetchMock = mockFetchSequence([
+        { candidates: [{ content: { parts: [{ functionCall: { name: "lookup", args: { x: 1 } } }] } }] },
+        { candidates: [{ content: { parts: [{ text: "done" }] } }] },
+      ]);
+      const client = new GoogleLlmClient("key", "gemini-3-pro");
+
+      await client.completeWithTools({
+        system: "s",
+        prompt: "p",
+        tools: [{ name: "lookup", description: "d", inputSchema: { type: "object" } }],
+        onToolCall: vi.fn().mockResolvedValue("tool result"),
+      });
+
+      const secondCall = fetchMock.mock.calls[1] as [string, RequestInit];
+      const body = JSON.parse(secondCall[1].body as string) as { contents: Array<{ role: string }> };
+      const functionResultTurn = body.contents[body.contents.length - 1]!;
+      expect(functionResultTurn.role).toBe("user");
     });
 
     it("includes prior conversation history ahead of the current prompt, mapping assistant to model", async () => {

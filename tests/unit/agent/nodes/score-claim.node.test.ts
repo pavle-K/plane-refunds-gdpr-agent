@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createScoreClaimNode } from "../../../../src/agent/nodes/score-claim.node.js";
 import { FakeWeatherAdapter, buildClearSkyObservation } from "../../../../src/providers/weather/fake.adapter.js";
 import { FakeDisruptionAdapter } from "../../../../src/providers/disruption/fake.adapter.js";
+import { FakeAirportReferenceAdapter, buildAirportFacts } from "../../../../src/providers/airport-reference/fake.adapter.js";
 import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { ok } from "../../../../src/lib/result.js";
@@ -40,6 +41,7 @@ function buildDeps() {
   return {
     weather: new FakeWeatherAdapter(),
     disruption: new FakeDisruptionAdapter(),
+    airportReference: new FakeAirportReferenceAdapter(),
     llm: new FakeLlmClient(),
     auditLog: new FakeAuditLog(),
   };
@@ -48,6 +50,7 @@ function buildDeps() {
 describe("score-claim node", () => {
   it("gathers weather + disruption evidence, calls the LLM, and audit-logs the output", async () => {
     const deps = buildDeps();
+    deps.airportReference.seed("FRA", ok(buildAirportFacts({ iataCode: "FRA", icaoCode: "EDDF", countryIsoCode: "DE" })));
     deps.weather.seed(
       { icaoCode: "EDDF", atUtc: FLIGHT_STATUS.scheduledDepartureUtc },
       ok(buildClearSkyObservation({ icaoCode: "EDDF" })),

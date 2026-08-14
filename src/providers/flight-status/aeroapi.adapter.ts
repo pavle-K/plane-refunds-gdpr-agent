@@ -30,7 +30,12 @@ interface AeroApiAirportRef {
   code_iata: string | null;
 }
 
-interface AeroApiFlight {
+/** Exported so dev tooling (scripts/lib/find-real-flight.ts) can reuse this
+ * exact hand-verified field mapping against OTHER AeroAPI endpoints that
+ * return the same Flight object shape (e.g. /airports/{id}/flights/*),
+ * instead of re-guessing the mapping or spending an extra request per
+ * candidate to re-fetch through getFlightStatus below. */
+export interface AeroApiFlight {
   ident_iata: string | null;
   operator_iata: string | null;
   origin: AeroApiAirportRef | null;
@@ -66,7 +71,7 @@ function computeArrivalStatus(flight: AeroApiFlight): {
   return { status: delayMinutes > 0 ? "delayed" : "on_time", delayMinutesAtArrival: delayMinutes };
 }
 
-function toFlightStatusResult(flightNumber: string, flight: AeroApiFlight): FlightStatusResult | null {
+export function toFlightStatusResult(flightNumber: string, flight: AeroApiFlight): FlightStatusResult | null {
   if (!flight.origin?.code_iata || !flight.destination?.code_iata || !flight.scheduled_out || !flight.scheduled_in) {
     return null;
   }

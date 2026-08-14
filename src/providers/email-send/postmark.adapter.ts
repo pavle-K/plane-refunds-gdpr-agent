@@ -8,6 +8,7 @@ import type { EmailSendProvider, OutboundEmail, SendReceipt, EmailSendError } fr
  * confirm the response shape against a real call before trusting it in production.
  */
 const SEND_URL = "https://api.postmarkapp.com/email";
+const MAX_ATTACHMENT_BYTES_BASE64 = 10 * 1024 * 1024;
 
 interface PostmarkSendResponse {
   MessageID: string;
@@ -20,6 +21,17 @@ export class PostmarkEmailSendAdapter implements EmailSendProvider {
   constructor(private readonly serverToken: string) {}
 
   async send(email: OutboundEmail): Promise<Result<SendReceipt, EmailSendError>> {
+    // Postmark caps a message at 10MB, measured AFTER base64 inflation (~4/3).
+    // Failing here names the real problem; letting it through produces an
+    // opaque upstream error at the point a user is waiting on a document.
+    const attachmentBytes = (email.attachments ?? []).reduce((total, a) => total + a.content.byteLength, 0);
+    if (attachmentBytes * (4 / 3) > MAX_ATTACHMENT_BYTES_BASE64) {
+      return err({
+        type: "upstream_error",
+        message: `Attachments total ${attachmentBytes} bytes, which exceeds Postmark's 10MB limit once base64-encoded`,
+      });
+    }
+
     let response: Response;
     try {
       response = await fetch(SEND_URL, {
@@ -34,6 +46,15 @@ export class PostmarkEmailSendAdapter implements EmailSendProvider {
           To: email.to,
           Subject: email.subject,
           TextBody: email.textBody,
+          ...(email.attachments?.length
+            ? {
+                Attachments: email.attachments.map((attachment) => ({
+                  Name: attachment.filename,
+                  Content: attachment.content.toString("base64"),
+                  ContentType: attachment.contentType,
+                })),
+              }
+            : {}),
         }),
       });
     } catch (cause) {

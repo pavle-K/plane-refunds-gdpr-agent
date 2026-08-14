@@ -2,11 +2,13 @@ import { createFlightStatusProvider } from "../providers/flight-status/index.js"
 import { createWeatherProvider } from "../providers/weather/index.js";
 import { createDisruptionProvider } from "../providers/disruption/index.js";
 import { createAirlineDirectoryProvider } from "../providers/airline-directory/index.js";
+import { createAirportReferenceProvider } from "../providers/airport-reference/index.js";
 import { createEmailSendProvider } from "../providers/email-send/index.js";
 import { createPaymentsProvider } from "../providers/payments/index.js";
 import { createLlmClient } from "./llm/index.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
+import { env } from "../config/env.js";
 import type { GraphDeps } from "./graph.js";
 
 /**
@@ -23,7 +25,9 @@ export function createRealGraphDeps(): GraphDeps {
     weather: createWeatherProvider(),
     disruption: createDisruptionProvider(),
     airlineDirectory: createAirlineDirectoryProvider(),
+    airportReference: createAirportReferenceProvider(),
     emailSend: createEmailSendProvider(),
+    ...(env.CLAIM_SENDER_EMAIL ? { fromAddress: env.CLAIM_SENDER_EMAIL } : {}),
     payments: createPaymentsProvider(),
     llm,
     auditLog: new DbAuditLog(),

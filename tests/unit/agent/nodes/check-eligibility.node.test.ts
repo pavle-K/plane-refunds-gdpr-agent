@@ -2,9 +2,26 @@ import { describe, it, expect } from "vitest";
 import { createCheckEligibilityNode } from "../../../../src/agent/nodes/check-eligibility.node.js";
 import { FakeFlightStatusAdapter, buildOnTimeResult } from "../../../../src/providers/flight-status/fake.adapter.js";
 import { StaticAirlineDirectoryAdapter } from "../../../../src/providers/airline-directory/static.adapter.js";
+import { FakeAirportReferenceAdapter, buildAirportFacts } from "../../../../src/providers/airport-reference/fake.adapter.js";
+import type { AirportFacts } from "../../../../src/providers/airport-reference/airport-reference.port.js";
 import { ok } from "../../../../src/lib/result.js";
 import { buildState } from "../../../helpers/build-state.js";
 import type { Booking } from "../../../../src/domain/claim/claim.types.js";
+
+/** Real coordinates/country codes for the handful of airports these tests
+ * exercise — seeded into the fake provider so the pure distance/eligibility
+ * math behaves exactly as it would against real data. */
+function buildAirportReference(): FakeAirportReferenceAdapter {
+  const adapter = new FakeAirportReferenceAdapter();
+  const seed = (facts: AirportFacts) => adapter.seed(facts.iataCode, ok(buildAirportFacts(facts)));
+  seed({ iataCode: "LHR", icaoCode: "EGLL", name: "London Heathrow", countryIsoCode: "GB", latitude: 51.47, longitude: -0.4543 });
+  seed({ iataCode: "JFK", icaoCode: "KJFK", name: "John F Kennedy Intl", countryIsoCode: "US", latitude: 40.6413, longitude: -73.7781 });
+  seed({ iataCode: "CDG", icaoCode: "LFPG", name: "Paris Charles de Gaulle", countryIsoCode: "FR", latitude: 49.0097, longitude: 2.5479 });
+  seed({ iataCode: "LAX", icaoCode: "KLAX", name: "Los Angeles Intl", countryIsoCode: "US", latitude: 33.9416, longitude: -118.4085 });
+  seed({ iataCode: "CGK", icaoCode: "WIII", name: "Soekarno-Hatta Intl", countryIsoCode: "ID", latitude: -6.1256, longitude: 106.6558 });
+  seed({ iataCode: "VCE", icaoCode: "LIPZ", name: "Venice Marco Polo", countryIsoCode: "IT", latitude: 45.5053, longitude: 12.3519 });
+  return adapter;
+}
 
 const BOOKING: Booking = {
   bookingReference: "ABC123",
@@ -22,7 +39,11 @@ const BOOKING: Booking = {
 const QUERY = { flightNumber: "AF001", scheduledDepartureDateUtc: "2024-06-15" };
 
 function buildDeps() {
-  return { flightStatus: new FakeFlightStatusAdapter(), airlineDirectory: new StaticAirlineDirectoryAdapter() };
+  return {
+    flightStatus: new FakeFlightStatusAdapter(),
+    airlineDirectory: new StaticAirlineDirectoryAdapter(),
+    airportReference: buildAirportReference(),
+  };
 }
 
 describe("check-eligibility node", () => {
@@ -45,6 +66,34 @@ describe("check-eligibility node", () => {
 
     expect(result.eligible).toBe(true);
     expect(result.compensationCents).toBe(60000); // CDG-JFK is long-haul
+  });
+
+  it("does not pass on an eligible claim whose compensation amount can't be computed", async () => {
+    const deps = buildDeps();
+    // Departure airport is unknown to the reference provider, so the route
+    // distance — and therefore the amount — can't be computed. Arrival is EU
+    // and the operating carrier is EU, so eligibility itself still comes out
+    // true; without the short-circuit this reached draftClaim and threw there.
+    deps.flightStatus.seed(
+      QUERY,
+      ok(
+        buildOnTimeResult({
+          operatingCarrierIataCode: "AF",
+          departureAirportIata: "ZZZ",
+          arrivalAirportIata: "CDG",
+          status: "delayed",
+          delayMinutesAtArrival: 220,
+        }),
+      ),
+    );
+    const node = createCheckEligibilityNode(deps);
+
+    const result = await node(buildState({ booking: BOOKING }));
+
+    expect(result.eligible).toBe(false);
+    expect(result.compensationCents).toBeNull();
+    expect(result.eligibilityReason).toContain("ZZZ");
+    expect(result.eligibilityReason).toContain("Needs manual review");
   });
 
   it("marks an on-time flight ineligible without calling domain eligibility on nonsense input", async () => {

@@ -1,5 +1,5 @@
 import { ok, type Result } from "../lib/result.js";
-import type { ChannelAdapter, ChannelSendError } from "./channel.port.js";
+import type { ChannelAdapter, ChannelSendError, OutboundDocument } from "./channel.port.js";
 
 /**
  * Records sends instead of hitting a real messaging API. Used by every test in
@@ -8,6 +8,7 @@ import type { ChannelAdapter, ChannelSendError } from "./channel.port.js";
  */
 export class FakeChannelAdapter implements ChannelAdapter {
   readonly sentMessages: { externalUserId: string; text: string }[] = [];
+  readonly sentDocuments: { externalUserId: string; document: OutboundDocument; caption?: string | undefined }[] = [];
   private nextResult: Result<void, ChannelSendError> | null = null;
 
   /** Override the result of the next sendMessage() call, e.g. to simulate a failure. */
@@ -17,6 +18,21 @@ export class FakeChannelAdapter implements ChannelAdapter {
 
   async sendMessage(externalUserId: string, text: string): Promise<Result<void, ChannelSendError>> {
     this.sentMessages.push({ externalUserId, text });
+
+    if (this.nextResult) {
+      const result = this.nextResult;
+      this.nextResult = null;
+      return result;
+    }
+    return ok(undefined);
+  }
+
+  async sendDocument(
+    externalUserId: string,
+    document: OutboundDocument,
+    caption?: string,
+  ): Promise<Result<void, ChannelSendError>> {
+    this.sentDocuments.push({ externalUserId, document, caption });
 
     if (this.nextResult) {
       const result = this.nextResult;

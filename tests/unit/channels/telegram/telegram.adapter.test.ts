@@ -29,6 +29,32 @@ describe("TelegramAdapter", () => {
     expect(JSON.parse(init.body as string)).toEqual({ chat_id: "42", text: "hello" });
   });
 
+  it("strips Markdown link syntax down to the bare URL before sending (no parse_mode is set, so it would otherwise show as broken literal text)", async () => {
+    const fetchMock = mockFetchOnce({ ok: true, result: {} });
+    const adapter = new TelegramAdapter("bot-token");
+
+    await adapter.sendMessage("42", "Click [here](https://example.com/oauth/gmail/callback?state=abc) to connect.");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "42",
+      text: "Click https://example.com/oauth/gmail/callback?state=abc to connect.",
+    });
+  });
+
+  it("leaves an already-bare URL and ordinary text untouched", async () => {
+    const fetchMock = mockFetchOnce({ ok: true, result: {} });
+    const adapter = new TelegramAdapter("bot-token");
+
+    await adapter.sendMessage("42", "Here you go: https://example.com/callback?a=1&b=2 — expires in 15 minutes.");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "42",
+      text: "Here you go: https://example.com/callback?a=1&b=2 — expires in 15 minutes.",
+    });
+  });
+
   it("maps a 401/403 to an auth_error", async () => {
     mockFetchOnce({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
     const adapter = new TelegramAdapter("bad-token");
@@ -73,5 +99,68 @@ describe("TelegramAdapter", () => {
     if (!result.ok) {
       expect(result.error.type).toBe("upstream_error");
     }
+  });
+
+  it("sends a document as multipart/form-data, not the JSON body sendMessage uses", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: { body: unknown }) => {
+        calls.push({ url, body: init.body });
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }),
+    );
+
+    const result = await new TelegramAdapter("token").sendDocument!(
+      "12345",
+      { filename: "claim.pdf", content: Buffer.from("%PDF-1.7"), contentType: "application/pdf" },
+      "Your claim form",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls[0]?.url).toContain("/sendDocument");
+    expect(calls[0]?.body).toBeInstanceOf(FormData);
+
+    const form = calls[0]?.body as FormData;
+    expect(form.get("chat_id")).toBe("12345");
+    expect(form.get("caption")).toBe("Your claim form");
+    const file = form.get("document") as File;
+    expect(file.name).toBe("claim.pdf");
+    expect(file.type).toBe("application/pdf");
+    expect(await file.text()).toBe("%PDF-1.7");
+  });
+
+  it("strips markdown links out of a caption, same as message text", async () => {
+    // No parse_mode is set on either call, so a wrapped link renders as literal
+    // brackets rather than something clickable.
+    const calls: { body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: unknown }) => {
+        calls.push({ body: init.body });
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }),
+    );
+
+    await new TelegramAdapter("token").sendDocument!(
+      "12345",
+      { filename: "claim.pdf", content: Buffer.from("x"), contentType: "application/pdf" },
+      "See [their form](https://example.test/claim)",
+    );
+
+    expect((calls[0]?.body as FormData).get("caption")).toBe("See https://example.test/claim");
+  });
+
+  it("maps a document send failure the same way a message send failure is mapped", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 429, ok: false, json: async () => ({ ok: false }) })));
+
+    const result = await new TelegramAdapter("token").sendDocument!("12345", {
+      filename: "claim.pdf",
+      content: Buffer.from("x"),
+      contentType: "application/pdf",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.type).toBe("rate_limited");
   });
 });

@@ -2,14 +2,16 @@ import type { GraphStateType } from "../state.js";
 import type { FlightStatusProvider } from "../../providers/flight-status/flight-status.port.js";
 import type { FlightStatusResult } from "../../providers/flight-status/flight-status.port.js";
 import type { AirlineDirectoryProvider } from "../../providers/airline-directory/airline-directory.port.js";
+import type { AirportReferenceProvider } from "../../providers/airport-reference/airport-reference.port.js";
 import { checkEligibility, type DisruptionType } from "../../domain/ec261/eligibility.js";
 import { getDistanceKm } from "../../domain/ec261/distance.js";
 import { getCompensationCents } from "../../domain/ec261/compensation.js";
-import { getAirportReference } from "../../domain/ec261/airport-reference.js";
+import { isEuMemberCountry } from "../../domain/ec261/eu-membership.js";
 
 export interface CheckEligibilityNodeDeps {
   flightStatus: FlightStatusProvider;
   airlineDirectory: AirlineDirectoryProvider;
+  airportReference: AirportReferenceProvider;
 }
 
 /**
@@ -90,18 +92,18 @@ export function createCheckEligibilityNode(deps: CheckEligibilityNodeDeps) {
       };
     }
 
-    const airlineResult = await deps.airlineDirectory.getAirline(lastSegment.operatingCarrierIataCode);
+    const [airlineResult, departureAirportResult, arrivalAirportResult] = await Promise.all([
+      deps.airlineDirectory.getAirline(lastSegment.operatingCarrierIataCode),
+      deps.airportReference.getAirport(firstSegment.departureAirportIata),
+      deps.airportReference.getAirport(lastSegment.arrivalAirportIata),
+    ]);
     const operatingCarrierIsEU = airlineResult.ok ? airlineResult.value.isEuCarrier : false;
 
-    let departureCountryIsEU = false;
-    let arrivalCountryIsEU = false;
-    try {
-      departureCountryIsEU = getAirportReference(firstSegment.departureAirportIata).countryIsEu;
-      arrivalCountryIsEU = getAirportReference(lastSegment.arrivalAirportIata).countryIsEu;
-    } catch {
-      // Unknown airport reference — falls through as non-EU, which is the
-      // conservative (claim-denying) direction rather than a false positive.
-    }
+    // A failed lookup on EITHER side falls through as non-EU for just that
+    // side, not both — the conservative (claim-denying) direction, not a
+    // false positive.
+    const departureCountryIsEU = departureAirportResult.ok && isEuMemberCountry(departureAirportResult.value.countryIsoCode);
+    const arrivalCountryIsEU = arrivalAirportResult.ok && isEuMemberCountry(arrivalAirportResult.value.countryIsoCode);
 
     const eligibility = checkEligibility({
       disruptionType,
@@ -112,15 +114,43 @@ export function createCheckEligibilityNode(deps: CheckEligibilityNodeDeps) {
       operatingCarrierIsEU,
     });
 
-    let compensationCents: number | null = null;
-    try {
-      // Direct distance from the ORIGINAL departure to the FINAL destination,
-      // ignoring any stops — per Art. 7(4), not the sum of the leg distances.
-      const distanceKm = getDistanceKm(firstSegment.departureAirportIata, lastSegment.arrivalAirportIata);
-      compensationCents = getCompensationCents(distanceKm);
-    } catch {
-      // Unknown airport in the distance table — compensation stays null; a human
-      // needs to resolve the amount manually rather than the graph guessing.
+    // Direct distance from the ORIGINAL departure to the FINAL destination,
+    // ignoring any stops — per Art. 7(4), not the sum of the leg distances.
+    // Compensation stays null if either airport's coordinates couldn't be
+    // resolved — a human needs to resolve the amount manually rather than the
+    // graph guessing.
+    const compensationCents =
+      departureAirportResult.ok && arrivalAirportResult.ok
+        ? getCompensationCents(
+            getDistanceKm(
+              { lat: departureAirportResult.value.latitude, lon: departureAirportResult.value.longitude },
+              { lat: arrivalAirportResult.value.latitude, lon: arrivalAirportResult.value.longitude },
+            ),
+          )
+        : null;
+
+    // "Eligible, amount unknown" cannot continue: draftClaim requires a
+    // compensationCents and used to throw an opaque error several nodes later
+    // when it got null here. That's reachable — an unresolvable DEPARTURE
+    // airport leaves compensationCents null while eligibility can still come
+    // out true on arrival-side coverage (EU arrival + EU carrier). Short-circuit
+    // with the reason named, matching how this node already handles an unknown
+    // cancellation notice period: an unresolvable input surfaces as a stated
+    // manual-review reason, never as a crash and never as a guessed amount.
+    if (eligibility.eligible && compensationCents === null) {
+      const unresolved = [
+        ...(departureAirportResult.ok ? [] : [firstSegment.departureAirportIata]),
+        ...(arrivalAirportResult.ok ? [] : [lastSegment.arrivalAirportIata]),
+      ].join(", ");
+      return {
+        flightStatuses,
+        eligible: false,
+        eligibilityReason:
+          `This flight appears to qualify (${eligibility.reason}), but the compensation amount can't be ` +
+          `computed: no airport reference data for ${unresolved}, so the route distance is unknown. ` +
+          "Needs manual review — the amount must not be guessed.",
+        compensationCents: null,
+      };
     }
 
     return {

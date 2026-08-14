@@ -39,7 +39,7 @@ export function createIngestNode(deps: IngestNodeDeps) {
 
     const booking: Booking = {
       bookingReference: parsed.bookingReference,
-      passengers: [{ id: "passenger-1", fullName: parsed.passengerFullName, email: "" }],
+      passengers: [{ id: "passenger-1", fullName: parsed.passengerFullName, email: null }],
       segments: parsed.segments.map((s) => ({
         flightNumber: s.flightNumber,
         operatingCarrierCode: s.flightNumber.slice(0, 2).toUpperCase(),

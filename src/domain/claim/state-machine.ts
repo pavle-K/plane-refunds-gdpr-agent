@@ -12,6 +12,7 @@ export type ClaimEvent =
   | "REQUEST_EDIT"
   | "DECLINE"
   | "SEND"
+  | "CANNOT_AUTO_SEND"
   | "CONFIRM_DISPATCHED"
   | "RECEIVE_REJECTION"
   | "RECEIVE_ACCEPTANCE"
@@ -39,8 +40,15 @@ const TRANSITIONS: TransitionTable = {
     REQUEST_EDIT: "draft",
     DECLINE: "declined",
     SEND: "sent",
+    // Human approved the CONTENT, but this carrier has no automated
+    // submission channel (see human-approval.node.ts) — distinct from "sent"
+    // (this system dispatched nothing) and from "declined" (the human didn't
+    // reject it). Terminal: tracking what happens after a human submits it
+    // themselves is deliberately out of scope for now.
+    CANNOT_AUTO_SEND: "needs_manual_submission",
   },
   declined: {},
+  needs_manual_submission: {},
   sent: {
     CONFIRM_DISPATCHED: "awaiting_response",
   },
@@ -64,7 +72,12 @@ const TRANSITIONS: TransitionTable = {
   paid: {},
 };
 
-const TERMINAL_STATUSES: ReadonlySet<ClaimStatus> = new Set(["declined", "escalated", "paid"]);
+const TERMINAL_STATUSES: ReadonlySet<ClaimStatus> = new Set([
+  "declined",
+  "needs_manual_submission",
+  "escalated",
+  "paid",
+]);
 
 export function isTerminal(status: ClaimStatus): boolean {
   return TERMINAL_STATUSES.has(status);

@@ -1,7 +1,27 @@
-import type { LlmClient, LlmCompleteParams, LlmCompleteWithToolsParams } from "../llm.port.js";
+import { LlmRateLimitedError, type LlmClient, type LlmCompleteParams, type LlmCompleteWithToolsParams } from "../llm.port.js";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+interface GeminiErrorBody {
+  error?: {
+    message?: string;
+    details?: Array<{ "@type"?: string; retryDelay?: string }>;
+  };
+}
+
+/** Gemini's RetryInfo detail carries a duration like "37.552280594s" —
+ * protobuf's Duration text format, not a plain number. Returns undefined
+ * rather than throwing if the shape doesn't match; a missing retry hint just
+ * means LlmRateLimitedError.retryAfterSeconds stays undefined. */
+function parseGeminiRetryDelaySeconds(body: GeminiErrorBody): number | undefined {
+  const retryDelay = body.error?.details?.find((d) => d.retryDelay)?.retryDelay;
+  if (!retryDelay) {
+    return undefined;
+  }
+  const seconds = Number.parseFloat(retryDelay.replace(/s$/, ""));
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
 
 interface GeminiPart {
   text?: string;
@@ -10,7 +30,7 @@ interface GeminiPart {
 }
 
 interface GeminiContent {
-  role: "user" | "model" | "function";
+  role: "user" | "model";
   parts: GeminiPart[];
 }
 
@@ -21,10 +41,9 @@ interface GeminiGenerateContentResponse {
 /**
  * Talks to the Gemini API directly over REST rather than adding the @google/genai
  * SDK as a dependency — consistent with how outlook.adapter.ts talks to Microsoft
- * Graph in this codebase. Unverified against a live call — no GOOGLE_API_KEY
- * configured yet; confirm once one is available, especially the function-calling
- * turn structure below (role: "function" for tool results), which is the most
- * likely spot to have drifted from current docs.
+ * Graph in this codebase. Tool results are sent back as role "user" (not a
+ * separate "function" role — Gemini has no such role; confirmed against a live
+ * 400 response listing the actual valid roles, which don't include it).
  */
 export class GoogleLlmClient implements LlmClient {
   constructor(
@@ -41,7 +60,17 @@ export class GoogleLlmClient implements LlmClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Gemini API returned ${response.status}: ${await response.text()}`);
+      const rawText = await response.text();
+      if (response.status === 429) {
+        let retryAfterSeconds: number | undefined;
+        try {
+          retryAfterSeconds = parseGeminiRetryDelaySeconds(JSON.parse(rawText) as GeminiErrorBody);
+        } catch {
+          // Malformed/non-JSON error body — still a rate limit, just without a retry hint.
+        }
+        throw new LlmRateLimitedError("Gemini", retryAfterSeconds, rawText);
+      }
+      throw new Error(`Gemini API returned ${response.status}: ${rawText}`);
     }
 
     const data = (await response.json()) as GeminiGenerateContentResponse;
@@ -111,7 +140,7 @@ export class GoogleLlmClient implements LlmClient {
         const resultText = await onToolCall({ name: call.name, input: call.args });
         responseParts.push({ functionResponse: { name: call.name, response: { result: resultText } } });
       }
-      contents.push({ role: "function", parts: responseParts });
+      contents.push({ role: "user", parts: responseParts });
     }
 
     throw new Error(`LLM tool loop did not converge within ${maxIterations} iterations`);
