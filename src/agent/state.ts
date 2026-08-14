@@ -5,6 +5,7 @@ import type { FlightStatusResult } from "../providers/flight-status/flight-statu
 import type { WeatherObservation } from "../providers/weather/weather.port.js";
 import type { DisruptionEvent } from "../providers/disruption/disruption.port.js";
 import type { SubmissionPlan } from "../providers/airline-directory/submission-plan.js";
+import type { KnownProfileFacts } from "../domain/claim/prefill.js";
 
 export interface ClaimScore {
   successLikelihood: number;
@@ -45,6 +46,14 @@ export const GraphState = Annotation.Root({
   /** Raw email body, when the graph is invoked from an inbox rather than an upload. */
   rawEmailText: Annotation<string | null>(overwrite<string | null>(null)),
   booking: Annotation<Booking | null>(overwrite<Booking | null>(null)),
+  /**
+   * The stored passenger profile, supplied by the caller rather than looked up
+   * here: the graph has no notion of a user (there is no userId in this state),
+   * so only the user-scoped operator layer can resolve it. Null means no profile
+   * is saved yet, which is a normal early state, not an error — draftClaim
+   * reports the resulting gaps instead of inventing values for them.
+   */
+  claimant: Annotation<KnownProfileFacts | null>(overwrite<KnownProfileFacts | null>(null)),
 
   /** One entry per booking.segments[], same order. First = first departure, last = final arrival. */
   flightStatuses: Annotation<FlightStatusResult[]>(overwrite<FlightStatusResult[]>([])),

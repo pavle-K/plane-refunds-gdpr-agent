@@ -3,13 +3,10 @@ import type { GraphStateType } from "../state.js";
 import type { LlmClient } from "../llm/llm.port.js";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import type { AirlineDirectoryProvider } from "../../providers/airline-directory/airline-directory.port.js";
-import {
-  buildSubmissionPlan,
-  type PresentableChannel,
-  type SubmissionPlan,
-} from "../../providers/airline-directory/submission-plan.js";
+import { buildSubmissionPlan, type SubmissionPlan } from "../../providers/airline-directory/submission-plan.js";
 import type { Booking } from "../../domain/claim/claim.types.js";
 import type { FlightStatusResult } from "../../providers/flight-status/flight-status.port.js";
+import { resolvePrefill, type KnownClaimFacts, type PrefillResult } from "../../domain/claim/prefill.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
 
@@ -20,6 +17,19 @@ export interface DraftClaimNodeDeps {
 }
 
 const draftSchema = z.object({ letterText: z.string() });
+
+/**
+ * Thrown rather than drafting a letter with nobody's name on it. A claim letter
+ * is addressed prose: without a claimant the model fills the gap itself, either
+ * with a bracketed placeholder or an invented name, and both have reached real
+ * users. Collect the profile first (see the passenger-profile tools) and retry.
+ */
+export class MissingClaimantDetailsError extends Error {
+  constructor() {
+    super("draftClaim refused: no claimant name on record — collect the passenger profile before drafting.");
+    this.name = "MissingClaimantDetailsError";
+  }
+}
 
 function formatEuros(cents: number): string {
   // EC261 compensation bands are always whole euros (€250/€400/€600) — see
@@ -42,17 +52,61 @@ function buildItineraryLines(flightStatuses: FlightStatusResult[]): string {
 }
 
 /**
+ * The claim facts the pipeline already holds, in the canonical vocabulary the
+ * prefill resolver speaks.
+ */
+function toKnownClaimFacts(params: {
+  booking: Booking;
+  flightStatuses: FlightStatusResult[];
+  compensationCents: number;
+}): KnownClaimFacts {
+  const { booking, flightStatuses, compensationCents } = params;
+  const names = booking.passengers.map((p) => p.fullName).filter((n): n is string => Boolean(n?.trim()));
+
+  return {
+    bookingReference: booking.bookingReference,
+    flightItinerary: flightStatuses
+      .map((s) => `${s.flightNumber} ${s.departureAirportIata}-${s.arrivalAirportIata} on ${s.scheduledDepartureUtc.slice(0, 10)}`)
+      .join("; "),
+    disruptionType: flightStatuses.some((s) => s.status === "cancelled") ? "cancellation" : "delay",
+    ...(names.length > 0 ? { passengerNames: names.join(", ") } : {}),
+    compensationAmount: formatEuros(compensationCents),
+  };
+}
+
+function renderPrefill(prefill: PrefillResult): string {
+  const sections: string[] = [];
+
+  if (prefill.resolved.length > 0) {
+    sections.push(
+      "Here's what I already have for you:\n" +
+        prefill.resolved.map((f) => `- ${f.label}: ${f.value}`).join("\n"),
+    );
+  }
+
+  const outstanding = [...prefill.missingFromProfile, ...prefill.missingPerClaim];
+  if (outstanding.length > 0) {
+    sections.push(
+      "You'll need to supply these yourself:\n" + outstanding.map((f) => `- ${f.label}`).join("\n"),
+    );
+  }
+
+  return sections.join("\n\n");
+}
+
+/**
  * A formal "Dear Sir/Madam" letter is the wrong artifact for a carrier that
  * doesn't accept letters — there is nowhere to paste prose into a web form, and
  * producing one invited exactly the "so it's been sent?" confusion that
  * draftText always risked.
  *
  * This builds a deterministic submission packet instead: what the plan says
- * about the carrier's channels, plus the facts the human will need to supply.
- * No LLM call — every fact here was already computed and verified elsewhere in
- * the pipeline, so this is formatting, not drafting. That distinction matters:
- * the letter path is where a fabricated booking reference came from once, and
- * there is no generative step here to fabricate anything with.
+ * about the carrier's channels, every value the system can already fill in, and
+ * an explicit list of what is still outstanding. No LLM call — every fact here
+ * was computed and verified elsewhere in the pipeline, so this is formatting,
+ * not drafting. That distinction matters: the letter path is where a fabricated
+ * booking reference came from once, and there is no generative step here to
+ * fabricate anything with.
  */
 function buildSubmissionPacket(params: {
   booking: Booking;
@@ -60,24 +114,33 @@ function buildSubmissionPacket(params: {
   compensationCents: number;
   eligibilityReason: string | null;
   plan: SubmissionPlan;
+  prefill: PrefillResult;
 }): string {
-  const { booking, flightStatuses, compensationCents, eligibilityReason, plan } = params;
-  const passengerName = booking.passengers[0]?.fullName ?? null;
+  const { booking, flightStatuses, compensationCents, eligibilityReason, plan, prefill } = params;
 
-  const facts = [
+  const claimFacts = [
     `- Booking reference: ${booking.bookingReference}`,
-    ...(passengerName ? [`- Passenger: ${passengerName}`] : []),
     `- Flight(s):\n${buildItineraryLines(flightStatuses)}`,
     `- Compensation to claim: ${formatEuros(compensationCents)} (EC261/2004${eligibilityReason ? ` — ${eligibilityReason}` : ""})`,
   ].join("\n");
 
-  return `${plan.message}\n\nHere are the details you'll need:\n${facts}`;
+  const prefillSection = renderPrefill(prefill);
+  return [`${plan.message}`, `The claim itself:\n${claimFacts}`, prefillSection].filter(Boolean).join("\n\n");
 }
 
-/** True when at least one channel can carry a written letter — email or post.
- * A web form cannot, so a carrier offering only a form gets the packet. */
-function acceptsALetter(channels: readonly PresentableChannel[]): boolean {
-  return channels.some((channel) => channel.kind === "email" || channel.kind === "postal");
+/**
+ * A letter is only the right artifact when there is exactly ONE route and it can
+ * carry prose (email or post).
+ *
+ * Deliberately NOT "any channel accepts a letter". A carrier offering both a web
+ * form and a postal address (British Airways, SWISS) is a choice the human has
+ * not made yet — drafting a letter there would quietly presume the postal route,
+ * which is the slower one, and leave the form details buried underneath it. The
+ * packet presents both routes with the facts for each; the letter follows once a
+ * route is actually chosen (tracked as the channel-selection work).
+ */
+function warrantsALetter(selection: SubmissionPlan["selection"]): boolean {
+  return selection.type === "single" && (selection.channel.kind === "email" || selection.channel.kind === "postal");
 }
 
 /**
@@ -94,8 +157,9 @@ function acceptsALetter(channels: readonly PresentableChannel[]): boolean {
  *    wrote a full formal claim for an airline with nowhere to send it, complete
  *    with an invented booking reference. There is now no generative step on this
  *    path to invent anything with.
- *  - A channel that can carry a letter (email or post): draft one with the LLM.
- *  - Web form only: build the deterministic packet.
+ *  - Exactly one route, and it carries prose (email or post): draft a letter.
+ *  - Anything else — a web form, or several routes the human hasn't chosen
+ *    between yet: build the deterministic packet.
  */
 export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {
@@ -118,15 +182,35 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       return { draftText: null, submission: plan };
     }
 
+    const claimFacts = toKnownClaimFacts({
+      booking: state.booking,
+      flightStatuses: state.flightStatuses,
+      compensationCents: state.compensationCents,
+    });
+    // Field requirements are per-channel; the first usable one is what the
+    // packet is built around. For a choice_required carrier the plan message
+    // still lists every route, so the human sees all of them before picking.
+    const primaryChannel = plan.channels.find((channel) => channel.verification !== "unverified");
+    // The stored profile wins, but a name already on the booking is real data,
+    // not a placeholder — fall back to it rather than asking for something we
+    // were just given. Same precedence as the letter path below.
+    const bookedName = state.booking.passengers[0]?.fullName ?? undefined;
+    const claimant = {
+      ...state.claimant,
+      claimantFullName: state.claimant?.claimantFullName ?? bookedName,
+    };
+    const prefill = resolvePrefill(primaryChannel?.requiredFieldKeys ?? null, claimFacts, claimant);
+
     // A rebuttal only exists because a real reply came back, which means a real
     // send happened, which today is only possible on an email channel — so
     // rebuttals always take the letter path. Written as a condition rather than
     // relied on as an assumption, in case that stops being true.
-    if (!isRebuttal && !acceptsALetter(plan.channels)) {
+    if (!isRebuttal && !warrantsALetter(plan.selection)) {
       const packet = buildSubmissionPacket({
         booking: state.booking,
         flightStatuses: state.flightStatuses,
         compensationCents: state.compensationCents,
+        prefill,
         eligibilityReason: state.eligibilityReason,
         plan,
       });
@@ -140,10 +224,26 @@ export function createDraftClaimNode(deps: DraftClaimNodeDeps) {
       return { draftText: packet, submission: plan };
     }
 
+    // Defence in depth, the same reasoning as the approval gate: a letter is
+    // addressed prose, so a missing claimant identity comes out as "[Your Name]"
+    // or an invented one. Refusing here means "the agent forgot to ask" fails
+    // loudly instead of reaching a user as a letter that looks ready to send.
+    const claimantName = claimant.claimantFullName ?? null;
+    if (!claimantName?.trim()) {
+      await deps.auditLog.record({
+        claimId: state.claimId,
+        entryType: "system_action",
+        payload: { node: "draftClaim", isRebuttal, outcome: "missing_claimant_identity" },
+      });
+      throw new MissingClaimantDetailsError();
+    }
+
     const basePayload = {
       booking: {
         bookingReference: state.booking.bookingReference,
-        passengerFullName: state.booking.passengers[0]?.fullName ?? null,
+        passengerFullName: claimantName,
+        claimantPostalAddress: state.claimant?.claimantPostalAddress ?? null,
+        claimantEmail: state.claimant?.claimantEmail ?? null,
       },
       // Full itinerary, in order — the letter should describe the whole
       // original-departure-to-final-destination trip, not just one leg

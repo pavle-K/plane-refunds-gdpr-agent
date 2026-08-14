@@ -8,13 +8,19 @@ import { ConsentRepo } from "../db/repositories/consent.repo.js";
  *
  * PLACEHOLDER: the notice text below is a stand-in — it needs a real privacy
  * policy link and company/DPO contact details before this reaches real users.
+ *
+ * v1 -> v2: added the passenger-profile store. Storing a postal address and
+ * bank details is a substantive change to what is processed, not a wording
+ * tweak, so anyone who consented under v1 has not agreed to it — the version
+ * bump is what makes that provable from the consents table.
  */
-export const CURRENT_POLICY_VERSION = "v1-placeholder";
+export const CURRENT_POLICY_VERSION = "v2-placeholder";
 
 export const CONSENT_NOTICE = `Before we get started, here's what this bot does with your data:
 
 - If you connect an email account, we only read booking-confirmation emails to find flight details — nothing else in your inbox is read or stored.
 - Flight, booking, and passenger details you share are used to check EC261 compensation eligibility and, only with your explicit approval, to draft and send a claim to the airline on your behalf.
+- If you choose to save your claim details (name, contact details, postal address and, where an airline's form requires it, your bank details) we store them so you don't have to re-enter them on every claim. Bank details are encrypted. You can have all of it deleted at any time by asking.
 - Your data is kept only as long as your claim is active plus the legally required window, then deleted. You can ask to see or delete everything we hold on you at any time.
 
 [PLACEHOLDER: full privacy policy — replace with a real URL and company/contact details before this reaches real users.]

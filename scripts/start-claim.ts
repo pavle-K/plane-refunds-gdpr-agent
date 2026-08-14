@@ -113,7 +113,7 @@ async function main() {
 
   const booking: Booking = {
     bookingReference,
-    passengers: [{ id: "passenger-1", fullName: passengerFullName, email: "" }],
+    passengers: [{ id: "passenger-1", fullName: passengerFullName, email: null }],
     segments: [
       {
         flightNumber,

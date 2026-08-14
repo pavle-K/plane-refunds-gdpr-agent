@@ -8,6 +8,8 @@ import { buildHostedAuthorizationUrl } from "../providers/email-ingest/hosted-oa
 import { EMAIL_OAUTH_PROVIDERS } from "../providers/email-ingest/oauth-providers.js";
 import { EmailConnectionRepo, type EmailProviderName } from "../db/repositories/email-connection.repo.js";
 import { ClaimRepo } from "../db/repositories/claim.repo.js";
+import { PassengerProfileRepo, type PassengerProfile } from "../db/repositories/passenger-profile.repo.js";
+import type { KnownProfileFacts } from "../domain/claim/prefill.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { ConsentRepo } from "../db/repositories/consent.repo.js";
 import { PendingConfirmationRepo, type ConfirmableActionType } from "../db/repositories/pending-confirmation.repo.js";
@@ -162,6 +164,38 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "get_passenger_profile",
+    description:
+      "Returns the claim details saved for this user (name, contact details, postal address, bank details) and " +
+      "which of them are still missing. Call this BEFORE drafting or presenting a claim — the airline's form " +
+      "will ask for these, and a claim prepared without them is incomplete. Never invent or assume any of these " +
+      "values; if something is missing, ask the user for it.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "save_passenger_profile",
+    description:
+      "Saves or updates the user's claim details so they don't have to be re-entered on every claim. Only pass " +
+      "fields the user has ACTUALLY given you in this conversation — never fill one in from a guess, from a " +
+      "similar-looking value, or from what a form 'usually' wants. Omitted fields keep their saved value. " +
+      "Requires the user to have provided at least a full name and a contact email the first time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fullName: { type: "string" },
+        contactEmail: { type: "string" },
+        phone: { type: "string" },
+        addressLine1: { type: "string" },
+        addressLine2: { type: "string" },
+        city: { type: "string" },
+        postalCode: { type: "string" },
+        countryIsoCode: { type: "string", description: "ISO 3166-1 alpha-2, e.g. ES" },
+        iban: { type: "string", description: "Only when the user has actually supplied it — never derive one." },
+        bic: { type: "string", description: "BIC/SWIFT. Some airlines (SWISS) require it alongside the IBAN." },
+      },
+    },
+  },
+  {
     name: "submit_airline_reply",
     description:
       "Provides the airline's reply text for a claim that's waiting for a response, so it can be classified " +
@@ -215,6 +249,23 @@ export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
     inputSchema: { type: "object", properties: {} },
   },
 ];
+
+/** Maps a stored profile onto the canonical claim-field vocabulary the prefill
+ * resolver speaks. Address lines are joined into the single postal-address fact
+ * a form asks for. */
+function toClaimantFacts(profile: PassengerProfile): KnownProfileFacts {
+  const addressParts = [profile.addressLine1, profile.addressLine2, profile.postalCode, profile.city, profile.countryIsoCode];
+  const postalAddress = addressParts.filter((part): part is string => Boolean(part?.trim())).join(", ");
+
+  return {
+    claimantFullName: profile.fullName,
+    claimantEmail: profile.contactEmail,
+    ...(profile.phone ? { claimantPhone: profile.phone } : {}),
+    ...(postalAddress ? { claimantPostalAddress: postalAddress } : {}),
+    ...(profile.iban ? { payoutIban: profile.iban, payoutAccountHolderName: profile.fullName } : {}),
+    ...(profile.bic ? { payoutBic: profile.bic } : {}),
+  };
+}
 
 export class OperatorTools {
   private readonly deps = createRealGraphDeps();
@@ -290,6 +341,10 @@ export class OperatorTools {
         return this.getClaimStatus(input["threadId"] as string | undefined);
       case "list_supported_airlines":
         return this.listSupportedAirlines();
+      case "get_passenger_profile":
+        return this.getPassengerProfile();
+      case "save_passenger_profile":
+        return this.savePassengerProfile(input as PassengerProfileToolInput);
       case "submit_airline_reply":
         return this.submitAirlineReply(input["threadId"] as string | undefined, input["replyText"] as string | undefined);
       case "submit_payment_confirmation":
@@ -347,6 +402,74 @@ export class OperatorTools {
     };
   }
 
+  /** Mirrors get_email_connection_status: a cheap read the model is told to do
+   * before acting, so it never asks the user for something already on record.
+   * Reports what's missing explicitly rather than returning a sparse object the
+   * model has to interpret. */
+  private async getPassengerProfile() {
+    const profile = await new PassengerProfileRepo().findByUserId(this.userId);
+    if (!profile) {
+      return { saved: false as const, missing: ["full name", "contact email"] };
+    }
+
+    const missing: string[] = [];
+    if (!profile.addressLine1) missing.push("postal address");
+    if (!profile.phone) missing.push("phone number");
+    if (!profile.iban) missing.push("bank details (IBAN)");
+    if (!profile.bic) missing.push("BIC/SWIFT code");
+
+    return {
+      saved: true as const,
+      fullName: profile.fullName,
+      contactEmail: profile.contactEmail,
+      phone: profile.phone ?? null,
+      addressLine1: profile.addressLine1 ?? null,
+      addressLine2: profile.addressLine2 ?? null,
+      city: profile.city ?? null,
+      postalCode: profile.postalCode ?? null,
+      countryIsoCode: profile.countryIsoCode ?? null,
+      // The stored values are returned so the model can show the user what's on
+      // record, but bank details are reported as present/absent only — there is
+      // no reason for an IBAN to pass back through a model's context to answer
+      // "have you got my details?".
+      hasIban: Boolean(profile.iban),
+      hasBic: Boolean(profile.bic),
+      missing,
+    };
+  }
+
+  /**
+   * Merge-on-write: reads the existing profile and applies only the fields the
+   * caller actually supplied. That keeps "update just my phone number" working
+   * without the model having to echo back every other field — and echoing them
+   * back is exactly where it would have the opportunity to alter one.
+   */
+  private async savePassengerProfile(input: PassengerProfileToolInput) {
+    const repo = new PassengerProfileRepo();
+    const existing = await repo.findByUserId(this.userId);
+
+    const fullName = input.fullName ?? existing?.fullName;
+    const contactEmail = input.contactEmail ?? existing?.contactEmail;
+    if (!fullName || !contactEmail) {
+      return { error: "A full name and a contact email are required before a profile can be saved." };
+    }
+
+    await repo.upsert(this.userId, {
+      fullName,
+      contactEmail,
+      phone: input.phone ?? existing?.phone,
+      addressLine1: input.addressLine1 ?? existing?.addressLine1,
+      addressLine2: input.addressLine2 ?? existing?.addressLine2,
+      city: input.city ?? existing?.city,
+      postalCode: input.postalCode ?? existing?.postalCode,
+      countryIsoCode: input.countryIsoCode ?? existing?.countryIsoCode,
+      iban: input.iban ?? existing?.iban,
+      bic: input.bic ?? existing?.bic,
+    });
+
+    return this.getPassengerProfile();
+  }
+
   /** Starts (does not execute) a disconnect_email confirmation — see
    * schema.ts's pending_confirmations doc comment for why execution is
    * deliberately not reachable from here. */
@@ -390,7 +513,18 @@ export class OperatorTools {
     const deletableClaimCount = allClaims.filter((c) => PRE_SEND_CLAIM_STATUSES.has(c.status)).length;
     const keptClaimCount = allClaims.length - deletableClaimCount;
 
+    const profile = await new PassengerProfileRepo().findByUserId(this.userId);
+
     const willDelete = ["your chat history", "your consent record"];
+    if (profile) {
+      // Named explicitly, and bank details called out separately: "your saved
+      // details" is too vague for someone deciding whether to confirm.
+      willDelete.push(
+        profile.iban || profile.bic
+          ? "your saved claim details (name, contact details, address and bank details)"
+          : "your saved claim details (name, contact details and address)",
+      );
+    }
     if (connectedEmails.length > 0) {
       willDelete.push(`your connected email (${connectedEmails.join(", ")})`);
     }
@@ -500,6 +634,10 @@ export class OperatorTools {
 
     await new ConversationRepo().deleteHistory(this.channelIdentityId);
     await new ConsentRepo().deleteForUser(this.userId);
+    // Unconditional, unlike claims: a profile is not itself a record of a
+    // transaction with a third party, and a claim that WAS sent already carries
+    // the name and address inside its stored letter text for the audit trail.
+    await new PassengerProfileRepo().deleteForUser(this.userId);
 
     await new DbAuditLog().record({
       userId: this.userId,
@@ -521,8 +659,9 @@ export class OperatorTools {
             }
           : null,
       note:
-        "Chat history and the consent record are deleted. The audit log (proof the human-approval gate was " +
-        "followed for any sent claim) is kept for the same legal reasons as sent claims.",
+        "Chat history, your saved claim details (including any bank details) and the consent record are " +
+        "deleted. The audit log (proof the human-approval gate was followed for any sent claim) is kept for " +
+        "the same legal reasons as sent claims.",
     };
   }
 
@@ -633,9 +772,23 @@ export class OperatorTools {
     // resolveThreadId's ownership check.
     await this.claimRepo.create(threadId, this.userId, bookingReference, "draft");
 
+    // Loaded here, not in the node: the graph has no notion of a user, so only
+    // this user-scoped layer can resolve a profile. Absent is a normal early
+    // state — draftClaim reports the resulting gaps rather than inventing values.
+    const profile = await new PassengerProfileRepo().findByUserId(this.userId);
+    const claimant = profile ? toClaimantFacts(profile) : null;
+
     const booking: Booking = {
       bookingReference,
-      passengers: [{ id: "passenger-1", fullName: input.passengerFullName ?? "Unknown Passenger", email: "" }],
+      // No "Unknown Passenger" fallback. That placeholder used to render into
+      // user-facing claim letters as though it were the passenger's real name.
+      passengers: [
+        {
+          id: "passenger-1",
+          fullName: input.passengerFullName ?? profile?.fullName ?? null,
+          email: profile?.contactEmail ?? null,
+        },
+      ],
       segments: input.segments.map((s) => ({
         flightNumber: s.flightNumber,
         // IATA flight numbers start with the 2-letter carrier code — derive it
@@ -650,7 +803,7 @@ export class OperatorTools {
     };
 
     const result = (await this.graph.invoke(
-      { claimId: threadId, claimStatus: "draft", booking },
+      { claimId: threadId, claimStatus: "draft", booking, claimant },
       this.config(threadId),
     )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(threadId, result);
@@ -791,7 +944,8 @@ export function describeConfirmedActionResult(actionType: ConfirmableActionType,
       parts.push(`Disconnected: ${r.disconnectedEmails.map((e) => e.emailAddress).join(", ")}.`);
     }
     parts.push(
-      `Deleted ${r.deletedClaimCount} claim(s) never sent to an airline, your chat history, and your consent record.`,
+      `Deleted ${r.deletedClaimCount} claim(s) never sent to an airline, your saved claim details, your chat ` +
+        "history, and your consent record.",
     );
     if (r.keptClaims) {
       parts.push(`Kept ${r.keptClaims.count} claim(s): ${r.keptClaims.reason}`);
@@ -831,6 +985,19 @@ interface StartClaimInput {
   segments: StartClaimSegmentInput[];
   bookingReference?: string;
   passengerFullName?: string;
+}
+
+interface PassengerProfileToolInput {
+  fullName?: string;
+  contactEmail?: string;
+  phone?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  postalCode?: string;
+  countryIsoCode?: string;
+  iban?: string;
+  bic?: string;
 }
 
 interface ApprovalInput {
