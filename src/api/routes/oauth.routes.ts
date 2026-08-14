@@ -6,6 +6,7 @@ import { ConversationRepo } from "../../db/repositories/conversation.repo.js";
 import { UserRepo } from "../../db/repositories/user.repo.js";
 import { resumeConversationAfterEmailConnected } from "../../operator/session.js";
 import type { LlmClient } from "../../agent/llm/llm.port.js";
+import { logger } from "../../lib/logger.js";
 
 /**
  * The public landing page a user's browser hits after they finish Google's or
@@ -64,7 +65,7 @@ async function sendConnectedNotification(
   const conversationRepo = new ConversationRepo();
   const identity = await conversationRepo.findChannelIdentity(channelIdentityId);
   if (!identity) {
-    console.error(`OAuth callback: no channel identity found for id ${channelIdentityId} — cannot notify.`);
+    logger.error("OAuth callback: no channel identity found — cannot notify", { channelIdentityId });
     return;
   }
 
@@ -74,12 +75,16 @@ async function sendConnectedNotification(
     try {
       confirmationText = await resumeConversationAfterEmailConnected(llm, { channelIdentityId, userId, emailAddress });
     } catch (cause) {
-      console.error("OAuth callback: failed to resume the conversation via the LLM — falling back:", cause);
+      logger.error("OAuth callback: failed to resume the conversation via the LLM — falling back", {
+        channelIdentityId,
+        userId,
+        cause: String(cause),
+      });
       confirmationText = fixedConnectedText(emailAddress);
       await conversationRepo.appendTurn(channelIdentityId, "assistant", confirmationText);
     }
   } else {
-    console.error(`OAuth callback: no user found for channel identity ${channelIdentityId} — cannot resume.`);
+    logger.error("OAuth callback: no user found for channel identity — cannot resume", { channelIdentityId });
     confirmationText = fixedConnectedText(emailAddress);
     await conversationRepo.appendTurn(channelIdentityId, "assistant", confirmationText);
   }
@@ -88,10 +93,19 @@ async function sendConnectedNotification(
     const adapter = getChannelAdapter(identity.channel);
     const result = await adapter.sendMessage(identity.externalId, confirmationText);
     if (!result.ok) {
-      console.error(`OAuth callback: failed to notify ${identity.channel}:${identity.externalId}:`, result.error);
+      logger.warn("OAuth callback: failed to notify user of connection", {
+        channel: identity.channel,
+        externalId: identity.externalId,
+        errorType: result.error.type,
+        message: result.error.message,
+      });
     }
   } catch (cause) {
-    console.error(`OAuth callback: unexpected error notifying ${identity.channel}:${identity.externalId}:`, cause);
+    logger.error("OAuth callback: unexpected error notifying user of connection", {
+      channel: identity.channel,
+      externalId: identity.externalId,
+      cause: String(cause),
+    });
   }
 }
 
@@ -124,13 +138,13 @@ export function createOAuthCallbackRouter(
       // Covers misconfiguration (e.g. TOKEN_ENCRYPTION_KEY unset) and any
       // other unexpected throw — never let a raw error/stack trace reach the
       // browser, and never leave the request hanging.
-      console.error(`OAuth callback threw (provider=${provider}, state=${state}):`, cause);
+      logger.error("OAuth callback threw", { provider, state, cause: String(cause) });
       res.status(500).type("html").send(renderPage("Something went wrong", TRY_AGAIN_MESSAGE));
       return;
     }
 
     if (!result.ok) {
-      console.error(`OAuth callback failed (provider=${provider}, state=${state}):`, result.error);
+      logger.error("OAuth callback failed", { provider, state, error: result.error });
       if (result.error.type === "provider_denied") {
         res
           .status(200)

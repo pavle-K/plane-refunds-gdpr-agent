@@ -4,9 +4,13 @@ import { channelIdentities, conversationMessages } from "../schema.js";
 import type { LlmConversationTurn } from "../../agent/llm/llm.port.js";
 import { UserRepo } from "./user.repo.js";
 
-/** How many most-recent turns to feed back as LLM history — bounds token usage
- * on a long-running conversation instead of replaying it in full forever. */
-const DEFAULT_HISTORY_LIMIT = 40;
+/** How many most-recent turns to fetch from the DB at most — a coarse cap on
+ * query size, not the real token bound. The real bound is
+ * src/agent/llm/history.ts's truncateHistoryByTokens, applied by callers
+ * (session.ts) on top of what this returns; this limit only needs to be
+ * generous enough that the token budget, not this row count, is what
+ * actually decides how much history survives. */
+const DEFAULT_HISTORY_LIMIT = 150;
 
 export class ConversationRepo {
   private readonly userRepo = new UserRepo();

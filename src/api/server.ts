@@ -10,11 +10,12 @@
  */
 import express from "express";
 import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
-import { createLlmClient, FakeLlmClient } from "../agent/llm/index.js";
+import { createLlmClient, FakeLlmClient, flushTracing } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
 import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
 import { env } from "../config/env.js";
+import { logger } from "../lib/logger.js";
 
 async function main() {
   const llm = createLlmClient();
@@ -24,7 +25,7 @@ async function main() {
     );
   }
 
-  console.log("Setting up checkpointer against real Postgres...");
+  logger.info("setting up checkpointer against real Postgres");
   await setupCheckpointer();
 
   const app = express();
@@ -44,21 +45,22 @@ async function main() {
   app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(llm));
 
   const server = app.listen(env.PORT, () => {
-    console.log(`API listening on :${env.PORT} (LLM_PROVIDER=${env.LLM_PROVIDER})`);
+    logger.info("API listening", { port: env.PORT, llmProvider: env.LLM_PROVIDER, logLevel: env.LOG_LEVEL });
   });
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       server.close(() => {
-        void getCheckpointer()
-          .end()
-          .finally(() => process.exit(0));
+        // Langfuse batches trace events and flushes on an internal timer —
+        // without this, whatever's queued from the last few turns before
+        // shutdown is silently lost. No-ops when Langfuse isn't configured.
+        void Promise.all([getCheckpointer().end(), flushTracing()]).finally(() => process.exit(0));
       });
     });
   }
 }
 
 main().catch((cause) => {
-  console.error("FAILED to start server:", cause);
+  logger.error("server failed to start", { cause: String(cause) });
   process.exit(1);
 });

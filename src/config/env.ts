@@ -81,6 +81,42 @@ const envSchema = z.object({
   // requests that didn't actually come from Telegram. Generate any random string.
   TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
 
+  // src/lib/logger.ts. Ordered least to most verbose. No static default here
+  // (see DATABASE_URL's comment for the general reason optional-with-no-default
+  // is used across this file) — src/lib/logger.ts defaults it to "error" under
+  // NODE_ENV=test (so the test suite's real integration paths, which now log
+  // through handleTurn, stay quiet by default) and "info" otherwise. "info" is
+  // the production default because it already answers "did the model call the
+  // tool or not", which is the question that actually needed answering the one
+  // time this repo shipped without any logging at all and a live incident
+  // couldn't be proven either way from the chat transcript alone.
+  LOG_LEVEL: z.enum(["error", "warn", "info", "debug", "trace"]).optional(),
+  // "pretty" (short, human-readable, colorized) vs "json" (one JSON object per
+  // line, for a real log platform). No static default here — src/lib/logger.ts
+  // defaults it from NODE_ENV (pretty in development, json otherwise), same
+  // convention as the NODE_ENV-conditional factories elsewhere in this repo
+  // (e.g. providers/flight-status/index.ts).
+  LOG_FORMAT: z.enum(["pretty", "json"]).optional(),
+
+  // Langfuse — LLM tracing (production observability) and dataset-driven prompt
+  // evals (tests/evals/). Both optional, same fallback convention as every other
+  // provider here: unset means src/agent/llm/langfuse-client.ts hands back null
+  // and tracing/eval-reporting silently no-ops, never blocking a turn or a run.
+  LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
+  LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
+  // Defaults to Langfuse Cloud's EU region if unset. This project keeps its
+  // Postgres in Frankfurt specifically for EU data residency (CLAUDE.md
+  // Stage 0) — traces carry raw prompts, which include passenger PII, so the
+  // same reasoning applies here. Only override for self-hosted or the US region.
+  LANGFUSE_HOST: z.string().url().optional(),
+
+  // src/agent/llm/history.ts — max estimated tokens of prior conversation
+  // replayed on every turn. A real conversation (trace.log, 2026-08-14) hit
+  // the old fixed 40-turn cap while including a full drafted claim letter,
+  // making every subsequent request enormous. Token-based, not count-based,
+  // since turn length varies from "yes" to a full letter.
+  MAX_HISTORY_TOKENS: z.coerce.number().int().positive().default(6000),
+
   // src/api/server.ts — hosts inbound channel webhooks.
   PORT: z.coerce.number().int().positive().default(3000),
 

@@ -4,6 +4,7 @@ import type { ChannelAdapter, InboundMessage } from "../../../channels/channel.p
 import { createTelegramAdapter, parseTelegramUpdate } from "../../../channels/telegram/index.js";
 import { handleTurn } from "../../../operator/session.js";
 import { env } from "../../../config/env.js";
+import { logger } from "../../../lib/logger.js";
 
 /**
  * Telegram expects a fast 2xx or it'll retry the same update — so this acks
@@ -45,10 +46,17 @@ async function replyToTelegramMessage(llm: LlmClient, adapter: ChannelAdapter, i
     });
     const result = await adapter.sendMessage(inbound.externalUserId, responseText);
     if (!result.ok) {
-      console.error(`Failed to send Telegram reply to ${inbound.externalUserId}: ${result.error.type} — ${result.error.message}`);
+      logger.warn("failed to send Telegram reply", {
+        externalId: inbound.externalUserId,
+        errorType: result.error.type,
+        message: result.error.message,
+      });
     }
   } catch (cause) {
-    console.error(`Unhandled error processing Telegram message from ${inbound.externalUserId}:`, cause);
+    logger.error("unhandled error processing Telegram message", {
+      externalId: inbound.externalUserId,
+      cause: String(cause),
+    });
     await adapter.sendMessage(inbound.externalUserId, describeUserFacingError(cause)).catch(() => {});
   }
 }
