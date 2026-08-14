@@ -75,4 +75,78 @@ describe("PostmarkEmailSendAdapter", () => {
       expect(result.error.type).toBe("upstream_error");
     }
   });
+
+  it("base64-encodes attachments into Postmark's Attachments array", async () => {
+    const calls: { body: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        calls.push({ body: init.body });
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ ErrorCode: 0, MessageID: "m-1", SubmittedAt: "2026-08-14T00:00:00Z" }),
+        };
+      }),
+    );
+
+    const adapter = new PostmarkEmailSendAdapter("token");
+    const result = await adapter.send({
+      to: "jane@example.test",
+      from: "claims@refunds.test",
+      subject: "Your claim form",
+      textBody: "Attached.",
+      attachments: [{ filename: "claim.pdf", content: Buffer.from("%PDF-1.7"), contentType: "application/pdf" }],
+    });
+
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(calls[0]!.body) as { Attachments: { Name: string; Content: string; ContentType: string }[] };
+    expect(body.Attachments).toHaveLength(1);
+    expect(body.Attachments[0]?.Name).toBe("claim.pdf");
+    expect(body.Attachments[0]?.ContentType).toBe("application/pdf");
+    expect(Buffer.from(body.Attachments[0]!.Content, "base64").toString()).toBe("%PDF-1.7");
+  });
+
+  it("omits the Attachments key entirely when there are none", async () => {
+    const calls: { body: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        calls.push({ body: init.body });
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ ErrorCode: 0, MessageID: "m-1", SubmittedAt: "2026-08-14T00:00:00Z" }),
+        };
+      }),
+    );
+
+    await new PostmarkEmailSendAdapter("token").send({
+      to: "a@example.test",
+      from: "b@example.test",
+      subject: "s",
+      textBody: "t",
+    });
+
+    expect(JSON.parse(calls[0]!.body)).not.toHaveProperty("Attachments");
+  });
+
+  it("refuses an oversized attachment rather than letting Postmark reject it", async () => {
+    // Named here, the failure points at the real cause; upstream it arrives as
+    // an opaque error while a user is waiting on a document.
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await new PostmarkEmailSendAdapter("token").send({
+      to: "a@example.test",
+      from: "b@example.test",
+      subject: "s",
+      textBody: "t",
+      attachments: [{ filename: "big.pdf", content: Buffer.alloc(9 * 1024 * 1024), contentType: "application/pdf" }],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("10MB");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

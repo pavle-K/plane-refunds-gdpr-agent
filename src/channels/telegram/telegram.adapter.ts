@@ -1,5 +1,5 @@
 import { ok, err, type Result } from "../../lib/result.js";
-import type { ChannelAdapter, ChannelSendError } from "../channel.port.js";
+import type { ChannelAdapter, ChannelSendError, OutboundDocument } from "../channel.port.js";
 
 interface TelegramApiResponse {
   ok: boolean;
@@ -43,6 +43,45 @@ export class TelegramAdapter implements ChannelAdapter {
       return err({ type: "upstream_error", message: `Network error calling Telegram: ${String(cause)}` });
     }
 
+    return this.interpretResponse(response);
+  }
+
+  /**
+   * sendDocument can't reuse sendMessage's JSON body — Telegram needs
+   * multipart/form-data with the file part. The caption goes through
+   * stripMarkdownLinks for the same reason message text does: no parse_mode is
+   * set, so Markdown syntax would render as literal brackets.
+   *
+   * Telegram's bot limit is 50MB; a claim form is a couple of pages, so this
+   * doesn't guard on size the way the email path has to.
+   */
+  async sendDocument(
+    externalUserId: string,
+    document: OutboundDocument,
+    caption?: string,
+  ): Promise<Result<void, ChannelSendError>> {
+    const form = new FormData();
+    form.append("chat_id", externalUserId);
+    form.append("document", new Blob([new Uint8Array(document.content)], { type: document.contentType }), document.filename);
+    if (caption) {
+      form.append("caption", stripMarkdownLinks(caption));
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
+        method: "POST",
+        body: form,
+      });
+    } catch (cause) {
+      return err({ type: "upstream_error", message: `Network error calling Telegram: ${String(cause)}` });
+    }
+
+    return this.interpretResponse(response);
+  }
+
+  /** Shared status/body handling — identical for sendMessage and sendDocument. */
+  private async interpretResponse(response: Response): Promise<Result<void, ChannelSendError>> {
     if (response.status === 401 || response.status === 403) {
       return err({ type: "auth_error", message: "Telegram rejected the bot token" });
     }
