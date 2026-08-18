@@ -391,14 +391,23 @@ here.
 
 ## Project status
 
-This project was built in stages, each one confirmed working before moving to the next:
+### Built and tested
 
-- ✅ **Stage 0** — project scaffolding, env validation, Postgres + LangGraph checkpointing.
-- ✅ **Stage 1** — domain core (`src/domain/`) and all data providers, each with a fake adapter and unit tests.
-- ✅ **Stage 2** — the full graph, prompts, the human-approval gate, audit logging, and (beyond the original plan) the conversational chat operator, multi-provider LLM support, and a messaging-channel layer (Telegram wired up; Discord/WhatsApp/Viber/Facebook/email follow the same adapter shape).
-- ✅ **Multi-tenant hosted OAuth** (beyond the original plan, driven by real remote users needing to connect their own inbox over a messaging channel — see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox)): a `users` identity model separate from `channel_identities`, per-user `email_connections` (with real-OAuth-verified reassignment on reconnect), a non-blocking hosted OAuth flow with PKCE, per-user authorization on every claim-touching tool (`src/operator/tools.ts`), first-contact consent capture, and statelessness for horizontal scale (no in-process caches — every entry point can be handled by any instance).
-- ✅ **LangChain convergence** (beyond the original plan): the conversational operator, originally a hand-written multi-provider tool-calling loop with no LangChain/LangGraph involvement, was rewritten onto LangChain's `createAgent`, sharing the claim pipeline's Postgres checkpointer. The claim-pipeline nodes (`scoreClaim`, `draftClaim`, `classifyResponse`) and the email booking extractor now use LangChain's native structured-output support instead of a hand-rolled prompt-and-parse mechanism. One LLM abstraction across the codebase instead of two. Rate-limit error translation (mapping a real provider 429 to a user-facing message) is not yet wired up for the new model layer — a known gap, not an oversight.
-- ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` has append-only audit logging and first-contact consent capture (the consent notice text is a **placeholder**, not reviewed legal copy — see [Legal & compliance disclaimer](#legal--compliance-disclaimer)), but **no retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**. A WhatsApp phone number or Telegram chat id is PII the moment it's stored, and none of it — nor any other user data — is covered by DSAR export/delete or retention yet. Claim state itself still lives only in the LangGraph checkpointer; `claims` (added for ownership/authorization) is a thin id+status mirror, not the full claim record.
+- Environment/config validation and Postgres + LangGraph checkpointing, working end to end.
+- The EC261 domain core (`src/domain/`) and every data provider, each with a fake adapter and unit tests.
+- The claim-pipeline graph, prompts, the human-approval gate, and audit logging.
+- The conversational operator (LangChain `createAgent`, sharing the claim pipeline's Postgres checkpointer), multi-provider LLM support (Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint), and a Telegram messaging channel.
+- Multi-tenant identity and access: a `users` model separate from `channel_identities`, per-user `email_connections` with a non-blocking hosted OAuth flow (PKCE) and real-OAuth-verified reassignment on reconnect, per-user authorization on every claim-touching tool (`src/operator/tools.ts`), first-contact consent capture, and no in-process state — any instance can handle any request.
+
+### Not built yet
+
+- **Compliance.** No retention/purge job, no log redaction, no DSAR (Article 15/17) export/delete endpoints. Audit logging and first-contact consent capture exist, but the consent notice text itself is a **placeholder**, not reviewed legal copy (see [Legal & compliance disclaimer](#legal--compliance-disclaimer)). A Telegram chat id or a future WhatsApp phone number is personal data the moment it's stored, and none of it is covered by retention or DSAR yet.
+- **Integration and durability testing.** No full-lifecycle tests across the whole graph, and no checkpoint/resume durability tests against real Postgres.
+- **A frontend.** Everything today is chat-driven (CLI or Telegram) or scripted through the CLI tools — there's no web UI for approvals, claim tracking, or DSAR requests.
+- **Self-updating airline data.** `src/providers/airline-directory/data/airlines.json` is a static, manually maintained file — nothing refreshes or verifies claims-contact addresses over time.
+- **Automated web-form claim submission.** Some airlines (Ryanair among them) don't accept claims by email at all — only through their own web form. Today that's a manual handoff: the system hands a human the drafted letter, the form URL, and the fields it knows are required. Driving the form submission itself — mapping fields, detecting when an airline's form layout changes, and never guessing at a field it can't confidently identify — is proposed but not built; see [issue #8](https://github.com/pavle-K/plane-refunds-gdpr-agent/issues/8).
+- **Rate-limit handling.** A real provider 429 isn't yet translated into a user-facing message for the LangChain model layer.
+- Claim state itself still lives only in the LangGraph checkpointer — `claims` (added for ownership/authorization) is a thin id+status mirror, not the full claim record.
 
 ---
 
