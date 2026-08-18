@@ -34,9 +34,9 @@ export type LogFields = Record<string, unknown>;
 
 /**
  * Keys redacted wherever they appear, at any nesting depth, in logged fields —
- * a pragmatic, key-based default, not the full PII scrubber CLAUDE.md's
- * compliance section describes (`src/compliance/redaction.ts`, still Stage 3,
- * not built). This catches the highest-damage cases (bank details, tokens,
+ * a pragmatic, key-based default, not a full PII scrubber
+ * (`src/compliance/redaction.ts`, still Stage 3, not built). This catches
+ * the highest-damage cases (bank details, tokens,
  * secrets) without redacting so aggressively that debug logging stops being
  * useful for its actual purpose — free text like a raw email body or a
  * passenger name is NOT redacted here; keep LOG_LEVEL at "info" in production

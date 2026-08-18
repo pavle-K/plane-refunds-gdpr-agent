@@ -1,5 +1,5 @@
 /**
- * Stage 2 deliverable check (CLAUDE.md): "full graph runs against real (or
+ * Stage 2 deliverable check: "full graph runs against real (or
  * sandboxed) data end-to-end for a single test claim, stopping correctly at the
  * human-approval gate and resuming correctly after approval."
  *

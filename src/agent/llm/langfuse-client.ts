@@ -15,8 +15,8 @@ let cached: Langfuse | null | undefined;
  * client is garbage collected.
  *
  * Defaults to Langfuse Cloud's EU region when LANGFUSE_HOST is unset — this
- * project keeps Postgres in Frankfurt specifically for EU data residency
- * (CLAUDE.md Stage 0), and a trace can carry a full raw prompt, which includes
+ * project keeps Postgres in Frankfurt specifically for EU data residency,
+ * and a trace can carry a full raw prompt, which includes
  * passenger PII (a booking reference, a name, occasionally an email address
  * pulled straight from a real conversation). That reasoning applies here too.
  */

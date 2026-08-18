@@ -15,7 +15,7 @@ export const users = pgTable("users", {
 /**
  * Append-only by application-level convention: db/repositories/audit.repo.ts only
  * exposes insert/select, never update/delete. DB-level enforcement (a trigger
- * rejecting UPDATE/DELETE) is Stage 3 hardening — see CLAUDE.md §5.6.
+ * rejecting UPDATE/DELETE) is Stage 3 hardening.
  */
 export const auditLog = pgTable("audit_log", {
   id: uuid("id").primaryKey().defaultRandom(),

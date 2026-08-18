@@ -12,7 +12,7 @@ export interface AwaitResponsePayload {
 }
 
 /**
- * Long-running wait state — may sit for days/weeks (CLAUDE.md §2.2). Uses the same
+ * Long-running wait state — may sit for days/weeks. Uses the same
  * interrupt()/Command(resume) mechanism as human-approval, resumed either by an
  * inbound-email webhook (`{type: "reply", ...}`) or a timeout sweep job
  * (`{type: "timeout"}`). Durable across process restarts via the checkpointer.

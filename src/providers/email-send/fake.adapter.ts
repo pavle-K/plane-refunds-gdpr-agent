@@ -4,7 +4,7 @@ import type { EmailSendProvider, OutboundEmail, SendReceipt, EmailSendError } fr
 /**
  * Records sends instead of sending. This is the adapter every test in the
  * project uses — a test that can actually email an airline is a test that will,
- * eventually, email an airline (see CLAUDE.md §5's hard rules).
+ * eventually, email an airline.
  */
 export class FakeEmailSendAdapter implements EmailSendProvider {
   readonly sentEmails: OutboundEmail[] = [];

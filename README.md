@@ -133,8 +133,6 @@ tests/
                    #   deliberately excluded from `npm test` / CI, see Testing prompts below
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) for the full design rationale and the staged build plan this repo follows.
-
 ---
 
 ## Getting started
@@ -142,7 +140,7 @@ See [`CLAUDE.md`](CLAUDE.md) for the full design rationale and the staged build 
 ### Prerequisites
 
 - Node.js ≥ 20
-- A Postgres database (any Postgres 14+ works; the original design target is Neon, EU region, for GDPR data-residency reasons — see `CLAUDE.md` §Stage 0)
+- A Postgres database (any Postgres 14+ works; the original design target is Neon, EU region, for GDPR data-residency reasons)
 - At least one LLM provider's credentials (or a local Ollama server — see below)
 
 ### Setup
@@ -374,7 +372,7 @@ here.
 
 ## Project status
 
-Following the staged plan in `CLAUDE.md`:
+This project was built in stages, each one confirmed working before moving to the next:
 
 - ✅ **Stage 0** — project scaffolding, env validation, Postgres + LangGraph checkpointing.
 - ✅ **Stage 1** — domain core (`src/domain/`) and all data providers, each with a fake adapter and unit tests.
@@ -387,7 +385,7 @@ Following the staged plan in `CLAUDE.md`:
 
 ## Legal & compliance disclaimer
 
-This project handles EU passenger personal data and is designed to eventually move client funds. Per `CLAUDE.md` §6, the following are explicitly **out of scope for engineering** and need to be handled with an accountant/lawyer before this touches a real claim or real money:
+This project handles EU passenger personal data and is designed to eventually move client funds. The following are explicitly **out of scope for engineering** and need to be handled with an accountant/lawyer before this touches a real claim or real money:
 
 - Entity registration, tax treatment, and Stripe Connect's legal/compliance setup.
 - Any autonomous send path that bypasses the human-approval node — none exists, and none should be built without a track record first.

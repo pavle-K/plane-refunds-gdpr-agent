@@ -1,5 +1,5 @@
 /**
- * CLAUDE.md §5.4/§7's "prompt regression suite" — `npm run test:prompts`.
+ * The "prompt regression suite" — `npm run test:prompts`.
  * Calls the REAL configured LLM (createLlmClient()) against the case set in
  * tests/evals/cases/, so it costs real API calls and is non-deterministic by
  * nature; it deliberately runs on demand, never in CI on every commit (see

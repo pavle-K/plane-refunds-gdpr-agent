@@ -2,7 +2,7 @@ import type { StructuredTool } from "@langchain/core/tools";
 import type { ConversationTurn } from "../../src/db/repositories/conversation.repo.js";
 
 /**
- * CLAUDE.md §5.4's "prompt regression suite" — deliberately separate from
+ * The "prompt regression suite" — deliberately separate from
  * `npm test`: these call a real, configured LLM (real cost, real latency, real
  * non-determinism), so they run on demand via `npm run test:prompts`, never in
  * CI on every commit. Types shared by every case file and by the runner.

@@ -18,8 +18,8 @@ import type { Booking } from "../../../../src/domain/claim/claim.types.js";
  * This can't be a bare function-call unit test: interrupt() requires real graph
  * execution context (it throws "called outside the context of a graph"
  * otherwise). So this builds the smallest real graph that exercises the
- * approval gate, using LangGraph's in-memory checkpointer (no DB needed) — see
- * CLAUDE.md §5.3: "the most important node test in the project."
+ * approval gate, using LangGraph's in-memory checkpointer (no DB needed).
+ * Arguably the most important node test in the project.
  */
 function buildMiniGraph() {
   const auditLog = new FakeAuditLog();

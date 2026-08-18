@@ -9,7 +9,7 @@ import {
  * Works out, for one carrier's form, which values the system can already fill
  * in and which the human still has to supply.
  *
- * PURE — no I/O, no clock, no LLM (CLAUDE.md §3.1). Callers pass in the facts
+ * PURE — no I/O, no clock, no LLM. Callers pass in the facts
  * they hold; this only decides what's covered. That keeps the "have we asked
  * the user for everything?" question exhaustively testable without a database
  * or a graph, which matters because getting it wrong in the optimistic

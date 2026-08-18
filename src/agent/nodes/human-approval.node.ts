@@ -19,7 +19,7 @@ export interface HumanApprovalNodeDeps {
 }
 
 /**
- * The mandatory pause before any outbound send (CLAUDE.md §Stage 2 non-negotiable).
+ * The mandatory pause before any outbound send — non-negotiable.
  * Interrupts the graph and waits for a human decision delivered via
  * `Command({ resume: decision })`. "edit" proceeds with the human's own text, not
  * the original draft — approve and edit both reach "sent" IF this carrier actually

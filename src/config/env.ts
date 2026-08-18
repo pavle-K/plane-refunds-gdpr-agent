@@ -10,7 +10,7 @@ const envSchema = z.object({
   // CLI scripts, migrations) — but validated lazily at that point of use
   // (db/client.ts's assertDatabaseConfigured()), not eagerly here. Optional at the
   // schema level so pure unit tests — which use fake adapters and never touch a
-  // real database, see CLAUDE.md §5 — can import modules that reference `env`
+  // real database — can import modules that reference `env`
   // without needing Postgres to exist, in CI or anywhere else.
   DATABASE_URL: z
     .string()
@@ -105,16 +105,17 @@ const envSchema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().min(1).optional(),
   LANGFUSE_SECRET_KEY: z.string().min(1).optional(),
   // Defaults to Langfuse Cloud's EU region if unset. This project keeps its
-  // Postgres in Frankfurt specifically for EU data residency (CLAUDE.md
-  // Stage 0) — traces carry raw prompts, which include passenger PII, so the
-  // same reasoning applies here. Only override for self-hosted or the US region.
+  // Postgres in Frankfurt specifically for EU data residency — traces carry
+  // raw prompts, which include passenger PII, so the same reasoning applies
+  // here. Only override for self-hosted or the US region.
   LANGFUSE_HOST: z.string().url().optional(),
 
-  // src/agent/llm/history.ts — max estimated tokens of prior conversation
-  // replayed on every turn. A real conversation (trace.log, 2026-08-14) hit
-  // the old fixed 40-turn cap while including a full drafted claim letter,
-  // making every subsequent request enormous. Token-based, not count-based,
-  // since turn length varies from "yes" to a full letter.
+  // src/operator/session.ts — max estimated tokens of prior conversation
+  // replayed on every turn (the trigger for the operator agent's context-editing
+  // middleware). A real conversation (trace.log, 2026-08-14) hit the old fixed
+  // 40-turn cap while including a full drafted claim letter, making every
+  // subsequent request enormous. Token-based, not count-based, since turn
+  // length varies from "yes" to a full letter.
   MAX_HISTORY_TOKENS: z.coerce.number().int().positive().default(6000),
 
   // src/api/server.ts — hosts inbound channel webhooks.
