@@ -1,4 +1,5 @@
-import type { LlmToolDefinition, LlmConversationTurn } from "../../src/agent/llm/index.js";
+import type { StructuredTool } from "@langchain/core/tools";
+import type { LlmConversationTurn } from "../../src/agent/llm/llm.port.js";
 
 /**
  * CLAUDE.md §5.4's "prompt regression suite" — deliberately separate from
@@ -61,7 +62,7 @@ export interface PromptVariant {
    * same way session.ts's buildSystemPrompt() does, so every trial (and every
    * variant) sees a consistently-shaped prompt. */
   systemPromptBase: string;
-  tools: LlmToolDefinition[];
+  tools: StructuredTool[];
 }
 
 export interface TrialOutcome {

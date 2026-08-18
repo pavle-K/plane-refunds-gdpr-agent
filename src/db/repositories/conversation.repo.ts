@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../client.js";
 import { channelIdentities, conversationMessages } from "../schema.js";
 import type { LlmConversationTurn } from "../../agent/llm/llm.port.js";
@@ -72,6 +72,27 @@ export class ConversationRepo {
    * identity rather than silently starting a fresh one). */
   async deleteHistory(channelIdentityId: string): Promise<void> {
     await db.delete(conversationMessages).where(eq(conversationMessages.channelIdentityId, channelIdentityId));
+  }
+
+  /** Whether the consent notice has ever been shown to this identity before —
+   * see channel_identities.noticeShownAtUtc's doc comment and
+   * src/compliance/consent.ts's decideConsent for why this is tracked
+   * separately from whether the identity has consented. */
+  async wasNoticeShown(channelIdentityId: string): Promise<boolean> {
+    const rows = await db
+      .select({ noticeShownAtUtc: channelIdentities.noticeShownAtUtc })
+      .from(channelIdentities)
+      .where(eq(channelIdentities.id, channelIdentityId))
+      .limit(1);
+    return rows[0]?.noticeShownAtUtc != null;
+  }
+
+  /** Idempotent — safe to call every time the notice is shown, not just the first. */
+  async markNoticeShown(channelIdentityId: string): Promise<void> {
+    await db
+      .update(channelIdentities)
+      .set({ noticeShownAtUtc: new Date() })
+      .where(and(eq(channelIdentities.id, channelIdentityId), isNull(channelIdentities.noticeShownAtUtc)));
   }
 
   /** The reverse of getOrCreateIdentity — given an id, which (channel,

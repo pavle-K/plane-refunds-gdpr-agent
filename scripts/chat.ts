@@ -16,7 +16,8 @@
  */
 import { createInterface } from "node:readline/promises";
 import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js";
-import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
+import { createChatModel } from "../src/agent/llm/chat-model.js";
+import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
 import { LlmRateLimitedError } from "../src/agent/llm/llm.port.js";
 import { handleTurn } from "../src/operator/session.js";
 import { env } from "../src/config/env.js";
@@ -24,8 +25,8 @@ import { env } from "../src/config/env.js";
 const CLI_EXTERNAL_ID = "local";
 
 async function main() {
-  const llm = createLlmClient();
-  if (llm instanceof FakeLlmClient) {
+  const model = createChatModel();
+  if (model instanceof FakeChatModel) {
     throw new Error(
       `LLM_PROVIDER=${env.LLM_PROVIDER} has no key/config set (see .env) — the operator can't chat without a real LLM.`,
     );
@@ -51,7 +52,7 @@ async function main() {
     // A failed turn (e.g. a rate-limited LLM call) shouldn't kill the whole
     // session — same reasoning as the Telegram route's per-message catch.
     try {
-      const responseText = await handleTurn(llm, {
+      const responseText = await handleTurn(model, {
         channel: "cli",
         externalId: CLI_EXTERNAL_ID,
         text: userInput,

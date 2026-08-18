@@ -35,9 +35,9 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { basename } from "node:path";
-import { TOOL_DEFINITIONS } from "../src/operator/tools.js";
+import { buildTools } from "../src/operator/tools.js";
 import { flushTracing } from "../src/agent/llm/index.js";
-import { runSuite } from "../tests/evals/runner.js";
+import { runSuite, stubToolResult } from "../tests/evals/runner.js";
 import { ALL_CASES } from "../tests/evals/cases/index.js";
 import type { EvalCase, PromptVariant, CaseRunResult } from "../tests/evals/types.js";
 
@@ -89,7 +89,15 @@ function loadVariant(path: string): PromptVariant {
   if (!existsSync(path)) {
     throw new Error(`Prompt file not found: ${path}`);
   }
-  return { name: basename(path), systemPromptBase: readFileSync(path, "utf-8"), tools: TOOL_DEFINITIONS };
+  return {
+    name: basename(path),
+    systemPromptBase: readFileSync(path, "utf-8"),
+    // A stub handler with no per-trial state — callOnce (runner.ts) derives
+    // toolsCalled from the invoked agent's own message history afterward, not
+    // from this closure, so the same tool set is safe to reuse across every
+    // trial and case for this variant without cross-trial contamination.
+    tools: buildTools(async (name) => stubToolResult(name)),
+  };
 }
 
 function selectCases(ids: string[] | undefined): EvalCase[] {

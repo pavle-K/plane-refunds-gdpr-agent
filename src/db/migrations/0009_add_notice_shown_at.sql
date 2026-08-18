@@ -1,0 +1,1 @@
+ALTER TABLE "channel_identities" ADD COLUMN "notice_shown_at_utc" timestamp with time zone;

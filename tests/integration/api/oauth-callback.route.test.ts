@@ -18,7 +18,7 @@ import { OAuthPendingFlowRepo } from "../../../src/db/repositories/oauth-pending
 import { UserRepo } from "../../../src/db/repositories/user.repo.js";
 import { ConversationRepo } from "../../../src/db/repositories/conversation.repo.js";
 import { FakeChannelAdapter } from "../../../src/channels/fake.adapter.js";
-import { FakeLlmClient } from "../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../src/agent/llm/fake-chat-model.js";
 
 const canRun = Boolean(
   env.DATABASE_URL && env.TOKEN_ENCRYPTION_KEY && env.PUBLIC_URL && env.GMAIL_OAUTH_CLIENT_ID && env.GMAIL_OAUTH_CLIENT_SECRET,
@@ -82,11 +82,11 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
   // Shared across every test in this describe block — each test enqueues
   // exactly what it needs and awaits full completion before returning, so the
   // queue never bleeds between tests (vitest runs `it`s sequentially here).
-  const llm = new FakeLlmClient();
+  const model = new FakeChatModel();
 
   beforeAll(async () => {
     app = express();
-    app.use(createOAuthCallbackRouter(llm, () => fakeAdapter));
+    app.use(createOAuthCallbackRouter(model, () => fakeAdapter));
     server = createServer(app);
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const { port } = server.address() as AddressInfo;
@@ -108,7 +108,7 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
     const { userId, channelIdentityId } = await makeUserAndIdentity();
     const emailAddress = `route-${randomUUID()}@example.com`;
     stubGmailFetch(emailAddress);
-    llm.enqueueFinalText("Connected.");
+    model.enqueueFinalText("Connected.");
 
     const { authorizationUrl } = await buildHostedAuthorizationUrl(userId, channelIdentityId, "gmail");
     const state = new URL(authorizationUrl).searchParams.get("state")!;
@@ -130,18 +130,22 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
     // Nothing was pending, so the resumption call should just confirm — this
     // exact text comes from the (fake) LLM, not a hardcoded string in the route.
     const confirmationText = "You're connected! Nothing else to do right now.";
-    llm.enqueueFinalText(confirmationText);
+    model.enqueueFinalText(confirmationText);
 
     const { authorizationUrl } = await buildHostedAuthorizationUrl(userId, channelIdentityId, "gmail");
     const state = new URL(authorizationUrl).searchParams.get("state")!;
 
-    const sentBefore = fakeAdapter.sentMessages.length;
     const res = await fetch(`${baseUrl}/oauth/gmail/callback?state=${state}&code=auth-code-1`);
     expect(res.status).toBe(200);
 
-    await waitFor(() => fakeAdapter.sentMessages.length > sentBefore);
-    const sent = fakeAdapter.sentMessages[fakeAdapter.sentMessages.length - 1]!;
-    expect(sent.externalUserId).toBe(identity?.externalId);
+    // Found by externalId, not "the last pushed message" — fakeAdapter and
+    // model are shared across every test in this describe block (the router
+    // is built once in beforeAll), and each test's own post-response
+    // background work (see sendConnectedNotification's doc comment) can
+    // still be in flight when the next test starts, so the array can
+    // legitimately contain more than one test's messages at once.
+    await waitFor(() => fakeAdapter.sentMessages.some((m) => m.externalUserId === identity?.externalId));
+    const sent = fakeAdapter.sentMessages.find((m) => m.externalUserId === identity?.externalId)!;
     expect(sent.text).toBe(confirmationText);
 
     const conversationRepo = new ConversationRepo();
@@ -153,6 +157,7 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
 
   it("resumes a pending request immediately after connecting, instead of just confirming", async () => {
     const { userId, channelIdentityId } = await makeUserAndIdentity();
+    const identity = await new ConversationRepo().findChannelIdentity(channelIdentityId);
     const emailAddress = `resume-${randomUUID()}@example.com`;
     stubGmailFetch(emailAddress);
 
@@ -163,38 +168,37 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
     await conversationRepo.appendTurn(channelIdentityId, "assistant", "Not yet — here's a link to connect it.");
 
     const resumedText = "All set — I checked, and your Gmail is now connected.";
-    llm.enqueueToolCall({ name: "get_email_connection_status", input: {} });
-    llm.enqueueFinalText(resumedText);
+    model.enqueueToolCall({ name: "get_email_connection_status", args: {} });
+    model.enqueueFinalText(resumedText);
 
     const { authorizationUrl } = await buildHostedAuthorizationUrl(userId, channelIdentityId, "gmail");
     const state = new URL(authorizationUrl).searchParams.get("state")!;
 
-    const sentBefore = fakeAdapter.sentMessages.length;
     const res = await fetch(`${baseUrl}/oauth/gmail/callback?state=${state}&code=auth-code-1`);
     expect(res.status).toBe(200);
 
-    await waitFor(() => fakeAdapter.sentMessages.length > sentBefore);
-    const sent = fakeAdapter.sentMessages[fakeAdapter.sentMessages.length - 1]!;
+    await waitFor(() => fakeAdapter.sentMessages.some((m) => m.externalUserId === identity?.externalId));
+    const sent = fakeAdapter.sentMessages.find((m) => m.externalUserId === identity?.externalId)!;
     expect(sent.text).toBe(resumedText);
-    expect(llm.toolCallsMade.some((c) => c.name === "get_email_connection_status")).toBe(true);
+    expect(model.toolCallsMade.some((c) => c.name === "get_email_connection_status")).toBe(true);
   });
 
   it("falls back to a fixed confirmation if the LLM resumption call fails", async () => {
     const { userId, channelIdentityId } = await makeUserAndIdentity();
+    const identity = await new ConversationRepo().findChannelIdentity(channelIdentityId);
     const emailAddress = `fallback-${randomUUID()}@example.com`;
     stubGmailFetch(emailAddress);
-    // Deliberately nothing enqueued — FakeLlmClient throws "no more tool-loop
-    // steps queued", exercising sendConnectedNotification's fallback path.
+    // Deliberately nothing enqueued — FakeChatModel throws "no more scripted
+    // responses queued", exercising sendConnectedNotification's fallback path.
 
     const { authorizationUrl } = await buildHostedAuthorizationUrl(userId, channelIdentityId, "gmail");
     const state = new URL(authorizationUrl).searchParams.get("state")!;
 
-    const sentBefore = fakeAdapter.sentMessages.length;
     const res = await fetch(`${baseUrl}/oauth/gmail/callback?state=${state}&code=auth-code-1`);
     expect(res.status).toBe(200);
 
-    await waitFor(() => fakeAdapter.sentMessages.length > sentBefore);
-    const sent = fakeAdapter.sentMessages[fakeAdapter.sentMessages.length - 1]!;
+    await waitFor(() => fakeAdapter.sentMessages.some((m) => m.externalUserId === identity?.externalId));
+    const sent = fakeAdapter.sentMessages.find((m) => m.externalUserId === identity?.externalId)!;
     expect(sent.text).toContain(emailAddress);
     expect(sent.text).toContain("Connected");
   });

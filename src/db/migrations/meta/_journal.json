@@ -64,6 +64,13 @@
       "when": 1786700681043,
       "tag": "0008_salty_jazinda",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787038081555,
+      "tag": "0009_add_notice_shown_at",
+      "breakpoints": true
     }
   ]
 }

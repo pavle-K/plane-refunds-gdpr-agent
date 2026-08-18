@@ -18,7 +18,7 @@ import express, { type Express } from "express";
 import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
 import { createTelegramWebhookRouter, describeUserFacingError } from "../../../../../src/api/routes/channels/telegram.routes.js";
-import { FakeLlmClient } from "../../../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../../../src/agent/llm/fake-chat-model.js";
 import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
 import { env } from "../../../../../src/config/env.js";
 
@@ -51,7 +51,7 @@ describe.skipIf(!canRun)("POST /webhooks/telegram — secret enforcement", () =>
   beforeAll(async () => {
     app = express();
     app.use(express.json());
-    app.use(createTelegramWebhookRouter(new FakeLlmClient()));
+    app.use(createTelegramWebhookRouter(new FakeChatModel()));
     server = createServer(app);
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const { port } = server.address() as AddressInfo;

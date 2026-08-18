@@ -1,11 +1,11 @@
 import { Router, type Request, type Response } from "express";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { completeHostedFlow } from "../../providers/email-ingest/hosted-oauth.js";
 import { createChannelAdapter } from "../../channels/index.js";
 import type { ChannelAdapter } from "../../channels/channel.port.js";
 import { ConversationRepo } from "../../db/repositories/conversation.repo.js";
 import { UserRepo } from "../../db/repositories/user.repo.js";
 import { resumeConversationAfterEmailConnected } from "../../operator/session.js";
-import type { LlmClient } from "../../agent/llm/llm.port.js";
 import { logger } from "../../lib/logger.js";
 
 /**
@@ -57,7 +57,7 @@ function fixedConnectedText(emailAddress: string): string {
  * already durably stored by the time this runs.
  */
 async function sendConnectedNotification(
-  llm: LlmClient,
+  model: BaseChatModel,
   channelIdentityId: string,
   emailAddress: string,
   getChannelAdapter: (channel: string) => ChannelAdapter,
@@ -73,7 +73,7 @@ async function sendConnectedNotification(
   const userId = await new UserRepo().getUserIdForChannelIdentity(channelIdentityId);
   if (userId) {
     try {
-      confirmationText = await resumeConversationAfterEmailConnected(llm, { channelIdentityId, userId, emailAddress });
+      confirmationText = await resumeConversationAfterEmailConnected(model, { channelIdentityId, userId, emailAddress });
     } catch (cause) {
       logger.error("OAuth callback: failed to resume the conversation via the LLM — falling back", {
         channelIdentityId,
@@ -110,7 +110,7 @@ async function sendConnectedNotification(
 }
 
 export function createOAuthCallbackRouter(
-  llm: LlmClient,
+  model: BaseChatModel,
   getChannelAdapter: (channel: string) => ChannelAdapter = createChannelAdapter,
 ): Router {
   const router = Router();
@@ -161,7 +161,7 @@ export function createOAuthCallbackRouter(
       .type("html")
       .send(renderPage("Connected", `${result.value.emailAddress} is now connected — you can return to your chat.`));
 
-    await sendConnectedNotification(llm, result.value.channelIdentityId, result.value.emailAddress, getChannelAdapter);
+    await sendConnectedNotification(model, result.value.channelIdentityId, result.value.emailAddress, getChannelAdapter);
   });
 
   return router;

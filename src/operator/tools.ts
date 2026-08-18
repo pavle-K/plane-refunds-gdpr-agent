@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Command } from "@langchain/langgraph";
-import type { LlmToolDefinition } from "../agent/llm/index.js";
+import { tool } from "langchain";
+import type { StructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
+import type { Logger } from "../lib/logger.js";
+import type { Tracer } from "../agent/llm/tracing.adapter.js";
 import { buildGraph } from "../agent/graph.js";
 import { createRealGraphDeps } from "../agent/real-deps.js";
 import { getCheckpointer } from "../agent/checkpointer.js";
@@ -46,6 +50,15 @@ const PENDING_CONFIRMATION_TTL_MINUTES = 5;
  * different user. Deliberately worded the same either way — this is an
  * internal chat tool, not a public API, but there's still no reason to
  * confirm to a caller that a *different* user's claim thread exists. */
+/** Thread id for a channel identity's OWN conversation-agent memory on the
+ * shared LangGraph checkpointer — prefixed to guarantee no collision with
+ * claim thread ids (`claim-<uuid>`), which share the same checkpointer
+ * tables. Single source of truth: src/operator/session.ts uses this to
+ * invoke the agent, forgetMyData (below) uses it to erase the thread. */
+export function operatorThreadId(channelIdentityId: string): string {
+  return `conv-${channelIdentityId}`;
+}
+
 export class ClaimAuthorizationError extends Error {
   constructor(threadId: string) {
     super(`No claim thread "${threadId}" found for this user.`);
@@ -53,220 +66,214 @@ export class ClaimAuthorizationError extends Error {
   }
 }
 
-export const TOOL_DEFINITIONS: LlmToolDefinition[] = [
-  {
-    name: "connect_email",
-    description:
-      "Returns a link that authorizes read-only access to the user's Gmail or Outlook inbox. Does NOT wait for " +
-      "them to complete it — send them the link and stop there; you'll be told separately, in a later message, " +
-      "once it's actually connected. Only call when the user has explicitly asked to connect an email account.",
-    inputSchema: {
-      type: "object",
-      properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
-      required: ["provider"],
-    },
-  },
-  {
-    name: "get_email_connection_status",
-    description:
-      "Checks whether Gmail and/or Outlook are already connected, and which address, before deciding whether to " +
-      "call connect_email. Always call this first — never ask the user to connect an account without checking.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "scan_inbox",
-    description:
-      "Scans the connected inbox for messages in a date range, flags which ones look like flight booking " +
-      "confirmations, and extracts structured booking details from those. Requires connect_email to have been " +
-      "run first. If the user gives an explicit period (a month, 'February and March', specific dates), use " +
-      "startDate/endDate for exactly that range — do NOT fall back to daysBack when they've specified a range.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        startDate: { type: "string", description: "Start of an explicit range, YYYY-MM-DD. Use with endDate." },
-        endDate: { type: "string", description: "End of an explicit range, YYYY-MM-DD (inclusive)." },
-        daysBack: {
-          type: "number",
-          description: "How many days back from today to search. Only used when startDate/endDate aren't given. Defaults to 30.",
-        },
-      },
-    },
-  },
-  {
-    name: "start_claim",
-    description:
-      "Starts a new EC261 compensation claim for a trip and runs it through eligibility checking, scoring, and " +
-      "drafting. Pass ALL segments of the itinerary in order (first departure to final destination) — for a " +
-      "connecting flight, that's more than one segment; a direct flight is just one. Never split a connecting " +
-      "itinerary into separate claims: EC261 eligibility is judged on the FINAL destination's arrival delay for " +
-      "the whole trip (Folkerts v Air France, C-11/11), not any individual leg. Only flightNumber and date are " +
-      "required per segment — the pipeline looks up departure/arrival airports, the operating carrier, and the " +
-      "actual delay/cancellation status itself from the flight number and date, so do NOT ask the user for " +
-      "airport codes or a carrier code; just call this with what you already extracted. Returns the eligibility " +
-      "result, a `submission` object saying how (or whether) a claim can actually reach this airline, and — when " +
-      "there is something to review — draftText. Do NOT treat any of this as sent or approved; it always needs a " +
-      "separate explicit decision, and for most carriers approving still cannot dispatch anything automatically.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        segments: {
-          type: "array",
-          description: "Flight segments in order, first departure to final arrival.",
-          items: {
-            type: "object",
-            properties: {
-              flightNumber: { type: "string", description: "IATA flight number, e.g. TK1867" },
-              date: { type: "string", description: "Scheduled departure date of this segment, YYYY-MM-DD" },
-              departureAirportIata: { type: "string", description: "Optional — looked up automatically if omitted." },
-              arrivalAirportIata: { type: "string", description: "Optional — looked up automatically if omitted." },
-              carrierCode: {
-                type: "string",
-                description: "Optional IATA carrier code, e.g. TK — derived from the flight number if omitted.",
-              },
-            },
-            required: ["flightNumber", "date"],
-          },
-        },
-        bookingReference: { type: "string" },
-        passengerFullName: { type: "string" },
-      },
-      required: ["segments"],
-    },
-  },
-  {
-    name: "submit_approval_decision",
-    description:
-      "Submits the human's decision on a drafted claim that's waiting for approval. ONLY call this when the " +
-      "user has explicitly and unambiguously stated their decision in their most recent message — never infer " +
-      "approval from silence, a vague reaction, or a request to 'see it again'. If they asked for changes, use " +
-      "action 'edit' with the full corrected letter text, not just the requested change.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
-        action: { type: "string", enum: ["approve", "edit", "decline"] },
-        editedText: { type: "string", description: "Required when action is 'edit' — the full replacement letter text." },
-      },
-      required: ["action"],
-    },
-  },
-  {
-    name: "get_claim_status",
-    description: "Checks the current status of a claim thread, including what it's currently waiting on, if anything.",
-    inputSchema: {
-      type: "object",
-      properties: { threadId: { type: "string", description: "Omit to use the most recently started/touched claim." } },
-    },
-  },
-  {
-    name: "list_supported_airlines",
-    description:
-      "Returns every airline this system knows about and every route by which a claim can currently reach each " +
-      "one — their own web form, email, post, or nothing confirmed yet. This is the ONLY correct way to answer a " +
-      "general question like 'which airlines can you send to automatically' or 'what about Lufthansa/Ryanair/etc' " +
-      "— never answer that kind of question from memory or a guess; call this and relay exactly what it returns. " +
-      "A carrier with no channel listed genuinely has none on record: say it isn't supported, don't go looking " +
-      "for a form URL from memory.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "send_postal_pack",
-    description:
-      "Generates a printable, prefilled EC261 claim form as a PDF and sends it to the user, by email and in " +
-      "this chat. Only for a carrier whose submission plan includes a POSTAL route. This does NOT submit " +
-      "anything to the airline and does not need approval — it hands the user a document to print, sign and " +
-      "post themselves. Call it only when the user has said they want the postal route (or both routes).",
-    inputSchema: {
-      type: "object",
-      properties: { threadId: { type: "string", description: "Omit to use the most recently touched claim." } },
-    },
-  },
-  {
-    name: "get_passenger_profile",
-    description:
-      "Returns the claim details saved for this user (name, contact details, postal address, bank details) and " +
-      "which of them are still missing. Call this BEFORE drafting or presenting a claim — the airline's form " +
-      "will ask for these, and a claim prepared without them is incomplete. Never invent or assume any of these " +
-      "values; if something is missing, ask the user for it.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "save_passenger_profile",
-    description:
-      "Saves or updates the user's claim details so they don't have to be re-entered on every claim. Only pass " +
-      "fields the user has ACTUALLY given you in this conversation — never fill one in from a guess, from a " +
-      "similar-looking value, or from what a form 'usually' wants. Omitted fields keep their saved value. " +
-      "Requires the user to have provided at least a full name and a contact email the first time.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        fullName: { type: "string" },
-        contactEmail: { type: "string" },
-        phone: { type: "string" },
-        addressLine1: { type: "string" },
-        addressLine2: { type: "string" },
-        city: { type: "string" },
-        postalCode: { type: "string" },
-        countryIsoCode: { type: "string", description: "ISO 3166-1 alpha-2, e.g. ES" },
-        iban: { type: "string", description: "Only when the user has actually supplied it — never derive one." },
-        bic: { type: "string", description: "BIC/SWIFT. Some airlines (SWISS) require it alongside the IBAN." },
-      },
-    },
-  },
-  {
-    name: "submit_airline_reply",
-    description:
-      "Provides the airline's reply text for a claim that's waiting for a response, so it can be classified " +
-      "and routed (accepted/rejected/needs more info). Omit replyText to signal a timeout (no reply received).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
-        replyText: { type: "string" },
-      },
-    },
-  },
-  {
-    name: "submit_payment_confirmation",
-    description: "Confirms the airline actually paid, triggering the commission split and payout.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        threadId: { type: "string", description: "Omit to use the most recently started/touched claim." },
-        receivedAmountCents: { type: "number" },
-        connectedAccountId: { type: "string", description: "Stripe Connect account id to pay out to." },
-      },
-      required: ["receivedAmountCents", "connectedAccountId"],
-    },
-  },
-  {
-    name: "disconnect_email",
-    description:
-      "Requests disconnecting the user's Gmail or Outlook inbox. Does NOT disconnect it immediately — this only " +
-      "starts a confirmation the system itself handles on the user's next message; it returns a confirmationPrompt " +
-      "you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not tell the user it's " +
-      "done, and do not call this tool again to 'confirm' — you have no way to confirm it yourself, only the " +
-      "user's own next reply does that. Only call when the user explicitly asks to disconnect or remove access " +
-      "to an email account.",
-    inputSchema: {
-      type: "object",
-      properties: { provider: { type: "string", enum: ["gmail", "outlook"] } },
-      required: ["provider"],
-    },
-  },
-  {
-    name: "forget_my_data",
-    description:
-      "Requests deleting the user's data held by this bot. Does NOT delete anything immediately — this only " +
-      "starts a confirmation the system itself handles on the user's next message; it returns a " +
-      "confirmationPrompt you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not " +
-      "tell the user their data is deleted, and do not call this tool again to 'confirm' — you have no way to " +
-      "confirm it yourself, only the user's own next reply does that. Only call when the user has explicitly and " +
-      "unambiguously asked to delete/forget their data — never speculatively, and never from an ambiguous or " +
-      "joking remark.",
-    inputSchema: { type: "object", properties: {} },
-  },
-];
+const emailProviderSchema = z.enum(["gmail", "outlook"]);
+
+const TOOL_SCHEMAS = {
+  connect_email: z.object({ provider: emailProviderSchema }),
+  get_email_connection_status: z.object({}),
+  scan_inbox: z.object({
+    startDate: z.string().describe("Start of an explicit range, YYYY-MM-DD. Use with endDate.").optional(),
+    endDate: z.string().describe("End of an explicit range, YYYY-MM-DD (inclusive).").optional(),
+    daysBack: z
+      .number()
+      .describe("How many days back from today to search. Only used when startDate/endDate aren't given. Defaults to 30.")
+      .optional(),
+  }),
+  start_claim: z.object({
+    segments: z
+      .array(
+        z.object({
+          flightNumber: z.string().describe("IATA flight number, e.g. TK1867"),
+          date: z.string().describe("Scheduled departure date of this segment, YYYY-MM-DD"),
+          departureAirportIata: z.string().describe("Optional — looked up automatically if omitted.").optional(),
+          arrivalAirportIata: z.string().describe("Optional — looked up automatically if omitted.").optional(),
+          carrierCode: z
+            .string()
+            .describe("Optional IATA carrier code, e.g. TK — derived from the flight number if omitted.")
+            .optional(),
+        }),
+      )
+      .min(1)
+      .describe("Flight segments in order, first departure to final arrival."),
+    bookingReference: z.string().optional(),
+    passengerFullName: z.string().optional(),
+  }),
+  submit_approval_decision: z
+    .object({
+      threadId: z.string().describe("Omit to use the most recently started/touched claim.").optional(),
+      action: z.enum(["approve", "edit", "decline"]),
+      editedText: z.string().describe("Required when action is 'edit' — the full replacement letter text.").optional(),
+    })
+    .refine((v) => v.action !== "edit" || Boolean(v.editedText), {
+      message: "action 'edit' requires editedText with the full replacement letter.",
+      path: ["editedText"],
+    }),
+  get_claim_status: z.object({
+    threadId: z.string().describe("Omit to use the most recently started/touched claim.").optional(),
+  }),
+  list_supported_airlines: z.object({}),
+  send_postal_pack: z.object({
+    threadId: z.string().describe("Omit to use the most recently touched claim.").optional(),
+  }),
+  get_passenger_profile: z.object({}),
+  save_passenger_profile: z.object({
+    fullName: z.string().optional(),
+    contactEmail: z.string().optional(),
+    phone: z.string().optional(),
+    addressLine1: z.string().optional(),
+    addressLine2: z.string().optional(),
+    city: z.string().optional(),
+    postalCode: z.string().optional(),
+    countryIsoCode: z.string().describe("ISO 3166-1 alpha-2, e.g. ES").optional(),
+    iban: z.string().describe("Only when the user has actually supplied it — never derive one.").optional(),
+    bic: z.string().describe("BIC/SWIFT. Some airlines (SWISS) require it alongside the IBAN.").optional(),
+  }),
+  submit_airline_reply: z.object({
+    threadId: z.string().describe("Omit to use the most recently started/touched claim.").optional(),
+    replyText: z.string().optional(),
+  }),
+  submit_payment_confirmation: z.object({
+    threadId: z.string().describe("Omit to use the most recently started/touched claim.").optional(),
+    receivedAmountCents: z.number(),
+    connectedAccountId: z.string().describe("Stripe Connect account id to pay out to."),
+  }),
+  disconnect_email: z.object({ provider: emailProviderSchema }),
+  forget_my_data: z.object({}),
+} as const;
+
+/** name -> top-level tool description, kept as a plain lookup (rather than
+ * folded into TOOL_SCHEMAS above) so every description string here reads
+ * exactly as it did in the pre-LangChain JSON-schema TOOL_DEFINITIONS —
+ * these are load-bearing prompt instructions to the model, not incidental
+ * comments, and are unchanged by this migration on purpose. */
+const TOOL_DESCRIPTIONS: Record<keyof typeof TOOL_SCHEMAS, string> = {
+  connect_email:
+    "Returns a link that authorizes read-only access to the user's Gmail or Outlook inbox. Does NOT wait for " +
+    "them to complete it — send them the link and stop there; you'll be told separately, in a later message, " +
+    "once it's actually connected. Only call when the user has explicitly asked to connect an email account.",
+  get_email_connection_status:
+    "Checks whether Gmail and/or Outlook are already connected, and which address, before deciding whether to " +
+    "call connect_email. Always call this first — never ask the user to connect an account without checking.",
+  scan_inbox:
+    "Scans the connected inbox for messages in a date range, flags which ones look like flight booking " +
+    "confirmations, and extracts structured booking details from those. Requires connect_email to have been " +
+    "run first. If the user gives an explicit period (a month, 'February and March', specific dates), use " +
+    "startDate/endDate for exactly that range — do NOT fall back to daysBack when they've specified a range.",
+  start_claim:
+    "Starts a new EC261 compensation claim for a trip and runs it through eligibility checking, scoring, and " +
+    "drafting. Pass ALL segments of the itinerary in order (first departure to final destination) — for a " +
+    "connecting flight, that's more than one segment; a direct flight is just one. Never split a connecting " +
+    "itinerary into separate claims: EC261 eligibility is judged on the FINAL destination's arrival delay for " +
+    "the whole trip (Folkerts v Air France, C-11/11), not any individual leg. Only flightNumber and date are " +
+    "required per segment — the pipeline looks up departure/arrival airports, the operating carrier, and the " +
+    "actual delay/cancellation status itself from the flight number and date, so do NOT ask the user for " +
+    "airport codes or a carrier code; just call this with what you already extracted. Returns the eligibility " +
+    "result, a `submission` object saying how (or whether) a claim can actually reach this airline, and — when " +
+    "there is something to review — draftText. Do NOT treat any of this as sent or approved; it always needs a " +
+    "separate explicit decision, and for most carriers approving still cannot dispatch anything automatically.",
+  submit_approval_decision:
+    "Submits the human's decision on a drafted claim that's waiting for approval. ONLY call this when the " +
+    "user has explicitly and unambiguously stated their decision in their most recent message — never infer " +
+    "approval from silence, a vague reaction, or a request to 'see it again'. If they asked for changes, use " +
+    "action 'edit' with the full corrected letter text, not just the requested change.",
+  get_claim_status: "Checks the current status of a claim thread, including what it's currently waiting on, if anything.",
+  list_supported_airlines:
+    "Returns every airline this system knows about and every route by which a claim can currently reach each " +
+    "one — their own web form, email, post, or nothing confirmed yet. This is the ONLY correct way to answer a " +
+    "general question like 'which airlines can you send to automatically' or 'what about Lufthansa/Ryanair/etc' " +
+    "— never answer that kind of question from memory or a guess; call this and relay exactly what it returns. " +
+    "A carrier with no channel listed genuinely has none on record: say it isn't supported, don't go looking " +
+    "for a form URL from memory.",
+  send_postal_pack:
+    "Generates a printable, prefilled EC261 claim form as a PDF and sends it to the user, by email and in " +
+    "this chat. Only for a carrier whose submission plan includes a POSTAL route. This does NOT submit " +
+    "anything to the airline and does not need approval — it hands the user a document to print, sign and " +
+    "post themselves. Call it only when the user has said they want the postal route (or both routes).",
+  get_passenger_profile:
+    "Returns the claim details saved for this user (name, contact details, postal address, bank details) and " +
+    "which of them are still missing. Call this BEFORE drafting or presenting a claim — the airline's form " +
+    "will ask for these, and a claim prepared without them is incomplete. Never invent or assume any of these " +
+    "values; if something is missing, ask the user for it.",
+  save_passenger_profile:
+    "Saves or updates the user's claim details so they don't have to be re-entered on every claim. Only pass " +
+    "fields the user has ACTUALLY given you in this conversation — never fill one in from a guess, from a " +
+    "similar-looking value, or from what a form 'usually' wants. Omitted fields keep their saved value. " +
+    "Requires the user to have provided at least a full name and a contact email the first time.",
+  submit_airline_reply:
+    "Provides the airline's reply text for a claim that's waiting for a response, so it can be classified " +
+    "and routed (accepted/rejected/needs more info). Omit replyText to signal a timeout (no reply received).",
+  submit_payment_confirmation: "Confirms the airline actually paid, triggering the commission split and payout.",
+  disconnect_email:
+    "Requests disconnecting the user's Gmail or Outlook inbox. Does NOT disconnect it immediately — this only " +
+    "starts a confirmation the system itself handles on the user's next message; it returns a confirmationPrompt " +
+    "you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not tell the user it's " +
+    "done, and do not call this tool again to 'confirm' — you have no way to confirm it yourself, only the " +
+    "user's own next reply does that. Only call when the user explicitly asks to disconnect or remove access " +
+    "to an email account.",
+  forget_my_data:
+    "Requests deleting the user's data held by this bot. Does NOT delete anything immediately — this only " +
+    "starts a confirmation the system itself handles on the user's next message; it returns a " +
+    "confirmationPrompt you must relay to the user VERBATIM (do not paraphrase, shorten, or add to it). Do not " +
+    "tell the user their data is deleted, and do not call this tool again to 'confirm' — you have no way to " +
+    "confirm it yourself, only the user's own next reply does that. Only call when the user has explicitly and " +
+    "unambiguously asked to delete/forget their data — never speculatively, and never from an ambiguous or " +
+    "joking remark.",
+};
+
+export type OperatorToolName = keyof typeof TOOL_SCHEMAS;
+
+/**
+ * Builds the 14 LangChain tools, each delegating to the given handler for
+ * name+input -> result. This is the one place TOOL_SCHEMAS/TOOL_DESCRIPTIONS
+ * become real LangChain `tool()` definitions — both buildOperatorTools below
+ * (the real, dispatch-backed handler used by src/operator/session.ts) and
+ * tests/evals/runner.ts (a stub handler that never touches real Postgres,
+ * see that file's own doc comment) build on this same factory, so the tool
+ * schemas/descriptions the model actually sees are provably identical in
+ * both places rather than two hand-maintained copies drifting apart.
+ */
+export function buildTools(handler: (name: OperatorToolName, input: Record<string, unknown>) => Promise<unknown>): StructuredTool[] {
+  return (Object.keys(TOOL_SCHEMAS) as OperatorToolName[]).map((name) =>
+    tool(async (input: Record<string, unknown>) => JSON.stringify(await handler(name, input)), {
+      name,
+      description: TOOL_DESCRIPTIONS[name],
+      schema: TOOL_SCHEMAS[name],
+    }),
+  );
+}
+
+/**
+ * Builds the 14 LangChain tools bound to one turn's OperatorTools instance.
+ * Every tool does nothing but call dispatch(name, input) — dispatch stays
+ * the single stable contract every dispatch-level test already exercises
+ * directly (data-deletion-tools.test.ts, claim-authorization.test.ts, etc.),
+ * so this is a thin adapter, not a second implementation. Zod schemas
+ * (replacing the old hand-written JSON Schema) give these tool calls real
+ * runtime input validation for the first time — dispatch() previously just
+ * cast whatever the model sent.
+ *
+ * The try/catch + log/trace-per-call here is a direct port of the old
+ * runLlmTurn's onToolCall body (src/operator/session.ts, pre-LangChain) — a
+ * tool that throws must still get a same-shaped {error} object fed back to
+ * the model, and still get logged at "error" with the cause, exactly as
+ * before. This used to be silently swallowed with no server-side trace at
+ * all until a real incident forced that behavior in; it must not regress.
+ */
+export function buildOperatorTools(operatorTools: OperatorTools, log: Logger, tracer: Tracer): StructuredTool[] {
+  return buildTools(async (name, input) => {
+    log.info("tool called", { tool: name });
+    try {
+      const result = await operatorTools.dispatch(name, input);
+      log.debug("tool result", { tool: name, input, result });
+      tracer.span({ name, input, output: result });
+      return result;
+    } catch (cause) {
+      log.error("tool dispatch threw", { tool: name, input, cause: String(cause) });
+      tracer.span({ name, input, output: { error: String(cause) } });
+      return { error: String(cause) };
+    }
+  });
+}
 
 /** Maps a stored profile onto the canonical claim-field vocabulary the prefill
  * resolver speaks. Address lines are joined into the single postal-address fact
@@ -652,6 +659,12 @@ export class OperatorTools {
       }
     }
 
+    // The operator agent's OWN reasoning-memory thread (distinct from the
+    // conversation_messages compliance transcript below) — this is where tool
+    // call args/results from past turns live now, which can carry PII, so
+    // erasure has to reach it too, same reasoning as the per-claim
+    // checkpointer deletes above.
+    await checkpointer.deleteThread(operatorThreadId(this.channelIdentityId));
     await new ConversationRepo().deleteHistory(this.channelIdentityId);
     await new ConsentRepo().deleteForUser(this.userId);
     // Unconditional, unlike claims: a profile is not itself a record of a
