@@ -16,6 +16,7 @@ Most eligible passengers never claim the compensation they're owed because the p
 - [Getting started](#getting-started)
 - [Choosing an LLM provider](#choosing-an-llm-provider)
 - [Connecting messaging channels](#connecting-messaging-channels)
+- [Connecting an email account](#connecting-an-email-account)
 - [Running it](#running-it)
 - [Testing](#testing)
 - [Testing prompts (evals)](#testing-prompts-evals)
@@ -70,10 +71,12 @@ ingest → checkEligibility ─(ineligible)────────────�
 ### Ways to interact with it
 
 1. **`npm run chat`** — a conversational operator running in your terminal. You talk to it in plain language ("check my inbox for bookings in March", "looks good, send it"); it calls tools that drive the graph above. See [`src/operator/`](src/operator/).
-2. **Messaging channels** (`npm run server`) — the same conversation, reachable from Telegram (and, as they're added, Discord/WhatsApp/Viber/Facebook/email) instead of a terminal. See [Connecting messaging channels](#connecting-messaging-channels).
-3. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the graph or providers directly with flags, useful for scripted testing without the LLM in the loop for orchestration.
+2. **Telegram** (`npm run server`) — the same conversation, reachable from a Telegram bot instead of a terminal. Telegram is the only messaging channel actually wired up right now — the adapter shape supports adding others (Discord, WhatsApp, ...) later, but none exist yet. See [Connecting messaging channels](#connecting-messaging-channels).
+3. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the claim-pipeline graph or a provider directly with flags, bypassing the conversational layer entirely. Useful for testing the pipeline itself without an LLM in the loop.
 
-Both (1) and (2) are front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one `createAgent` agent, one identity per user, many ways in.
+(1) and (2) are two front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one `createAgent` agent, one identity per user, many ways in.
+
+Connecting an email account requires `npm run server` to be running, even when using `npm run chat`. The `connect_email` tool initiates an OAuth flow, and the redirect target is served by the API server, not the chat process. See [Connecting an email account](#connecting-an-email-account).
 
 ---
 
@@ -206,9 +209,11 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
 
 ## Connecting messaging channels
 
-`npm run chat` and every messaging channel are the same conversation underneath — `src/operator/session.ts` is the one place that builds the system prompt and runs the agent, keyed by `(channel, externalId)` — a Telegram chat id, a Discord user id, an email address, whatever a given platform uses as its identity. The agent's own conversation memory lives in its LangGraph checkpointer thread, one per identity; `channel_identities`/`conversation_messages` (Postgres) separately hold the identity record and a full compliance/audit transcript of every turn, including ones the agent never runs on (e.g. blocked by the consent gate). A channel adapter's only job is translating its platform's payload into `{externalUserId, text}` and sending the reply string back out — see `src/channels/channel.port.ts`.
+`npm run chat` and Telegram are the same conversation underneath — `src/operator/session.ts` is the one place that builds the system prompt and runs the agent, keyed by `(channel, externalId)`, e.g. a Telegram chat id. The agent's own conversation memory lives in its LangGraph checkpointer thread, one per identity; `channel_identities`/`conversation_messages` (Postgres) separately hold the identity record and a full compliance/audit transcript of every turn, including ones the agent never runs on (e.g. blocked by the consent gate). A channel adapter's only job is translating its platform's payload into `{externalUserId, text}` and sending the reply string back out — see `src/channels/channel.port.ts`.
 
-**Telegram** is the only channel wired up so far (Discord, WhatsApp, Viber, and Facebook follow the same `src/channels/<platform>/` shape once added — `channel.port.ts` and `src/operator/session.ts` don't change).
+Telegram is the only channel wired up right now. The adapter shape (`src/channels/<platform>/`) is built so others (Discord, WhatsApp, Viber, Facebook, email) can slot in later without touching `channel.port.ts` or `src/operator/session.ts`, but none of those exist yet.
+
+### Setting up the Telegram bot
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`, and copy the token it gives you.
 2. Add to `.env`:
@@ -222,7 +227,7 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
 ```bash
 npm run dev:telegram
 ```
-Starts ngrok (or reuses one already running), starts the server with `PUBLIC_URL` set to the tunnel automatically, registers the Telegram webhook against it, and prints the two things that genuinely can't be scripted — the redirect URI to add in Google Cloud Console / Azure, and the Google "Testing" mode test-user reminder (see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox)). Needs a free ngrok account + `ngrok config add-authtoken <token>` once, from https://dashboard.ngrok.com. `Ctrl+C` stops the server and tunnel together, cleanly.
+Starts ngrok (or reuses one already running), starts the server with `PUBLIC_URL` set to the tunnel automatically, registers the Telegram webhook against it, and prints the two things that genuinely can't be scripted — the redirect URI to add in Google Cloud Console / Azure, and the Google "Testing" mode test-user reminder (see [Connecting an email account](#connecting-an-email-account) — you'll need that too if you want the bot to connect a real inbox). Needs a free ngrok account + `ngrok config add-authtoken <token>` once, from https://dashboard.ngrok.com. `Ctrl+C` stops the server and tunnel together, cleanly.
 
 <details>
 <summary>What it's doing (the manual version, if you want separate terminals, or a real hosted deployment instead of ngrok)</summary>
@@ -240,6 +245,22 @@ Starts ngrok (or reuses one already running), starts the server with `PUBLIC_URL
 
 If `TELEGRAM_BOT_TOKEN` isn't set, `createTelegramAdapter()` falls back to `FakeChannelAdapter` (records instead of sending) — same convention as every other provider in this repo.
 
+---
+
+## Connecting an email account
+
+The `connect_email` tool always uses a real OAuth flow. The redirect callback is served by the API server's OAuth route (`src/api/routes/oauth.routes.ts`), which only runs as part of `npm run server` — regardless of which front door initiated the connection:
+
+- **`npm run chat` alone:** `npm run server` must also be running, in a second terminal, with `PUBLIC_URL` set to match (`http://localhost:3000` by default, matching `PORT`). Without it, the OAuth redirect has no listener to reach.
+- **Telegram:** no extra step required — `npm run server` is already running to serve the bot.
+
+For local CLI testing without a second process, use the local-loopback flow instead:
+```bash
+npm run email:connect -- gmail     # or: outlook
+npm run email:check
+```
+This is a separate flow (`scripts/connect-email.ts`) that opens the browser and blocks in-process until the redirect completes, followed by a check that lists recent messages and flags likely booking confirmations. It only connects the local CLI identity, and is distinct from the `connect_email` tool used inside a live conversation.
+
 ### How a remote user connects their own inbox
 
 Every user who messages the bot — on Telegram or any future channel — gets their own identity, their own consent record, their own email connection, and their own claims, fully isolated from every other user's (see `src/db/schema.ts`'s `users` / `channel_identities` / `email_connections` / `claims` tables, and `src/operator/tools.ts`'s per-user authorization checks). Nothing here assumes a single developer using their own accounts.
@@ -248,12 +269,10 @@ Every user who messages the bot — on Telegram or any future channel — gets t
 2. **Connecting email.** The user says something like "connect my gmail." The bot replies with a link immediately — it does not block waiting for them to finish it. The user opens the link in their own browser, authorizes on Google's/Microsoft's real consent screen, and lands on a minimal confirmation page. The bot then sends a proactive "Connected" message back into the same chat on its own — no polling, no second message needed from the user.
 3. **Ownership.** If a mailbox that's already connected to one user gets reconnected by a different user (who just proved control of it via a real, completed OAuth flow), ownership reassigns to them, and the change is written to the audit log (`entryType: "mailbox_reassigned"`).
 
-Requires `PUBLIC_URL` (the public HTTPS origin this server is reachable at, no trailing slash) in addition to the Telegram setup above. Manual, one-time prerequisites before this works for real (non-developer) users — not code:
+Requires `PUBLIC_URL` (the public HTTPS origin this server is reachable at, no trailing slash). Manual, one-time prerequisites before this works for real (non-developer) users over Telegram — not code:
 
-- Register `${PUBLIC_URL}/oauth/gmail/callback` and `${PUBLIC_URL}/oauth/outlook/callback` as authorized redirect URIs in Google Cloud Console / Azure (separate from the localhost URI the CLI's local flow below uses).
+- Register `${PUBLIC_URL}/oauth/gmail/callback` and `${PUBLIC_URL}/oauth/outlook/callback` as authorized redirect URIs in Google Cloud Console / Azure (separate from the localhost URI the CLI's local-loopback flow above uses).
 - Move the Google OAuth consent screen out of "Testing" mode — `gmail.readonly` is a sensitive scope, and Google requires an app verification review before real third-party users (not just your own account) can complete it. This can take real review time — start it early.
-
-`npm run chat`'s `connect_email` uses this same hosted flow now too — you'll get a link to open in your own browser rather than one that opens automatically. `npm run email:connect -- gmail` (below) is a separate, simpler local-loopback flow that still opens/blocks locally, kept for quick local dev convenience.
 
 ---
 
@@ -262,12 +281,12 @@ Requires `PUBLIC_URL` (the public HTTPS origin this server is reachable at, no t
 ```bash
 npm run chat
 ```
-Talk to it directly: "connect my gmail", "check my inbox for flights in February", "start a claim for BA123 on 2024-06-15", "looks good, send it". This is the real product experience, and it runs on whichever `LLM_PROVIDER` you've configured.
+Talk to it directly: "check my inbox for flights in February", "start a claim for BA123 on 2024-06-15", "looks good, send it". This is the real product experience, and it runs on whichever `LLM_PROVIDER` you've configured. If you also want to say "connect my gmail" here, start `npm run server` in a second terminal first — see [Connecting an email account](#connecting-an-email-account).
 
 ```bash
 npm run server
 ```
-Same conversation, reachable from Telegram (and future channels) instead of a terminal — see [Connecting messaging channels](#connecting-messaging-channels).
+Same conversation, reachable from Telegram instead of a terminal — see [Connecting messaging channels](#connecting-messaging-channels).
 
 ```bash
 npm run claim:start -- --flight BA123 --date 2024-06-15 --from LHR --to JFK --carrier BA --delay 220 --status delayed
@@ -283,7 +302,7 @@ Resumes a paused claim (e.g. once you have a real airline reply to paste in) —
 npm run email:connect -- gmail     # or: outlook
 npm run email:check
 ```
-One-time OAuth connection to an inbox for the local CLI identity, then a sanity check that lists recent messages and flags which look like booking confirmations. This is the local-loopback flow (opens/blocks locally) — see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox) for the hosted flow real, remote users go through.
+One-time OAuth connection to an inbox for the local CLI identity, then a sanity check that lists recent messages and flags which look like booking confirmations. See [Connecting an email account](#connecting-an-email-account) for how this differs from `connect_email` inside a live conversation.
 
 ---
 
