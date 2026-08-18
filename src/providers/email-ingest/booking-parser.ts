@@ -22,7 +22,7 @@ export const noAttachmentFetcher: AttachmentFetcher = async (filename) =>
 
 /**
  * The real implementation of this (Stage 2) is an LLM call — kept as an injected
- * function so this module never depends on a real LLM, per CLAUDE.md's "no test
+ * function so this module never depends on a real LLM, per this repo's "no test
  * uses a real LLM call" rule. Tests inject a fake/deterministic extractor.
  *
  * Receives the full email (including attachment metadata) plus a fetcher so the

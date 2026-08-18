@@ -1,18 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { createClassifyResponseNode } from "../../../../src/agent/nodes/classify-response.node.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../../src/agent/llm/fake-chat-model.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { IllegalTransitionError } from "../../../../src/domain/claim/state-machine.js";
 import { buildState } from "../../../helpers/build-state.js";
 
 function buildDeps() {
-  return { llm: new FakeLlmClient(), auditLog: new FakeAuditLog() };
+  return { llm: new FakeChatModel(), auditLog: new FakeAuditLog() };
 }
 
 describe("classify-response node", () => {
   it("classifies a rejection and transitions claimStatus to rejected", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ category: "rejected", reasoning: "cites technical fault", requestedInfo: null });
+    deps.llm.enqueueFinalJson({ category: "rejected", reasoning: "cites technical fault", requestedInfo: null });
     const node = createClassifyResponseNode(deps);
 
     const result = await node(
@@ -27,7 +27,7 @@ describe("classify-response node", () => {
 
   it("classifies an acceptance and transitions claimStatus to accepted", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ category: "accepted", reasoning: "airline agreed", requestedInfo: null });
+    deps.llm.enqueueFinalJson({ category: "accepted", reasoning: "airline agreed", requestedInfo: null });
     const node = createClassifyResponseNode(deps);
 
     const result = await node(
@@ -39,7 +39,7 @@ describe("classify-response node", () => {
 
   it("leaves claimStatus unchanged for needs_info/ambiguous", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ category: "needs_info", reasoning: "wants docs", requestedInfo: ["boarding pass"] });
+    deps.llm.enqueueFinalJson({ category: "needs_info", reasoning: "wants docs", requestedInfo: ["boarding pass"] });
     const node = createClassifyResponseNode(deps);
 
     const result = await node(
@@ -57,7 +57,7 @@ describe("classify-response node", () => {
 
   it("refuses an illegal transition (e.g. classifying from a status that can't receive a response)", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ category: "rejected", reasoning: "r", requestedInfo: null });
+    deps.llm.enqueueFinalJson({ category: "rejected", reasoning: "r", requestedInfo: null });
     const node = createClassifyResponseNode(deps);
 
     await expect(

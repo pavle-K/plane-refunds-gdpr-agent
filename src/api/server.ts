@@ -10,7 +10,9 @@
  */
 import express from "express";
 import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
-import { createLlmClient, FakeLlmClient, flushTracing } from "../agent/llm/index.js";
+import { createChatModel } from "../agent/llm/chat-model.js";
+import { FakeChatModel } from "../agent/llm/fake-chat-model.js";
+import { flushTracing } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
 import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
@@ -18,8 +20,8 @@ import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
 async function main() {
-  const llm = createLlmClient();
-  if (llm instanceof FakeLlmClient) {
+  const model = createChatModel();
+  if (model instanceof FakeChatModel) {
     throw new Error(
       `LLM_PROVIDER=${env.LLM_PROVIDER} has no key/config set (see .env) — channels can't chat without a real LLM.`,
     );
@@ -41,8 +43,8 @@ async function main() {
   app.use(express.json());
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
-  app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(llm));
-  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(llm));
+  app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(model));
+  app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(model));
 
   const server = app.listen(env.PORT, () => {
     logger.info("API listening", { port: env.PORT, llmProvider: env.LLM_PROVIDER, logLevel: env.LOG_LEVEL });

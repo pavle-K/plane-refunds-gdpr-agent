@@ -18,8 +18,8 @@ export interface AuditEntry {
 }
 
 /**
- * Every LLM-drafted output and every human-approval decision goes through this —
- * see CLAUDE.md §2.4. Only ever appended to; there is deliberately no update/delete
+ * Every LLM-drafted output and every human-approval decision goes through this.
+ * Only ever appended to; there is deliberately no update/delete
  * method on this interface or on AuditRepo.
  */
 export interface AuditLog {

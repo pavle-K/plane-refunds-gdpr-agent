@@ -62,7 +62,7 @@ export class ClaimSubmissionNotAutomatedError extends Error {
  * Defense in depth: refuses to send unless the claim already passed through the
  * approval gate (claimStatus === "sent", which only human-approval.node can set).
  * The graph's edges should never route here otherwise, but this node checks
- * anyway — see CLAUDE.md's non-negotiable on enforcing this at both levels.
+ * anyway — this is enforced at both levels, deliberately, as defense in depth.
  */
 export function createSendClaimNode(deps: SendClaimNodeDeps) {
   return async (state: GraphStateType): Promise<Partial<GraphStateType>> => {

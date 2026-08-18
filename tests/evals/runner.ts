@@ -1,4 +1,7 @@
-import { createLlmClient, LlmRateLimitedError } from "../../src/agent/llm/index.js";
+import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { createAgent } from "langchain";
+import { createChatModel } from "../../src/agent/llm/chat-model.js";
+import { LlmRateLimitedError } from "../../src/agent/llm/rate-limit-error.js";
 import { getLangfuseClient } from "../../src/agent/llm/langfuse-client.js";
 import type { EvalCase, EvalAssertion, CaseRunResult, EvalTrialResult, PromptVariant, ToolCallRecord } from "./types.js";
 
@@ -8,16 +11,21 @@ import type { EvalCase, EvalAssertion, CaseRunResult, EvalTrialResult, PromptVar
  * (3/3 tool calls on the old prompt, 1/3 on the new one) into something
  * permanent and reusable, rather than a one-off left in a scratch directory.
  *
- * Calls the REAL configured LLM (createLlmClient()) — no fakes, no stubbed
+ * Calls the REAL configured LLM (createChatModel()) — no fakes, no stubbed
  * responses. That's the entire point: this measures whether the actual
- * deployed model reliably does the right thing, which a FakeLlmClient-backed
+ * deployed model reliably does the right thing, which a FakeChatModel-backed
  * unit test structurally cannot answer.
  *
- * Tool dispatch is stubbed here (never OperatorTools.dispatch) — an eval run
- * must never touch real Postgres, send a real email, or create a real pending
- * deletion confirmation. Only whether the model DECIDED to call a tool is
- * being measured, not the tool's own behavior (that's what tests/unit and
- * tests/integration already cover).
+ * Tool dispatch is stubbed at the tool level here (never OperatorTools.dispatch —
+ * see variant.tools, built via buildTools with a stub handler, not
+ * buildOperatorTools) — an eval run must never touch real Postgres, send a
+ * real email, or create a real pending deletion confirmation. Only whether
+ * the model DECIDED to call a tool is being measured, not the tool's own
+ * behavior (that's what tests/unit and tests/integration already cover).
+ *
+ * Each trial is a one-shot, uncheckpointed agent.invoke() call — testCase.history
+ * is fed as literal prior messages, not replayed through a persisted
+ * checkpointer thread, so trials never leak state into each other.
  */
 
 const DATE_SUFFIX_TEMPLATE = (now: Date): string =>
@@ -28,7 +36,7 @@ const DATE_SUFFIX_TEMPLATE = (now: Date): string =>
  * forget_my_data/disconnect_email get a realistic confirmationPrompt shape —
  * every other tool gets an empty object, which is fine for cases that only
  * care WHICH tool got called, not what happens after. */
-function stubToolResult(toolName: string): unknown {
+export function stubToolResult(toolName: string): unknown {
   if (toolName === "forget_my_data" || toolName === "disconnect_email") {
     return {
       status: "confirmation_required",
@@ -46,20 +54,37 @@ const MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 5_000;
 
 async function callOnce(variant: PromptVariant, testCase: EvalCase): Promise<EvalTrialResult> {
-  const llm = createLlmClient();
   const toolsCalled: ToolCallRecord[] = [];
   const system = variant.systemPromptBase + DATE_SUFFIX_TEMPLATE(new Date());
 
-  const responseText = await llm.completeWithTools({
-    system,
-    prompt: testCase.message,
-    tools: variant.tools,
-    history: testCase.history ?? [],
-    onToolCall: async (call) => {
-      toolsCalled.push({ name: call.name, input: call.input });
-      return JSON.stringify(stubToolResult(call.name));
-    },
-  });
+  // variant.tools is built via buildTools (src/operator/tools.js) with a stub
+  // handler that records here and returns stubToolResult — see this file's
+  // top doc comment for why that's never OperatorTools.dispatch.
+  const agent = createAgent({ model: createChatModel(), tools: variant.tools, systemPrompt: system });
+
+  const history: BaseMessage[] = (testCase.history ?? []).map((turn) =>
+    turn.role === "user" ? new HumanMessage(turn.content) : new AIMessage(turn.content),
+  );
+  const result = await agent.invoke({ messages: [...history, new HumanMessage(testCase.message)] });
+
+  const messages = result.messages as BaseMessage[];
+  let lastHumanIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (HumanMessage.isInstance(messages[i])) {
+      lastHumanIndex = i;
+      break;
+    }
+  }
+  for (const message of messages.slice(lastHumanIndex + 1)) {
+    if (AIMessage.isInstance(message) && message.tool_calls) {
+      for (const call of message.tool_calls) {
+        toolsCalled.push({ name: call.name, input: call.args });
+      }
+    }
+  }
+
+  const finalMessage = messages[messages.length - 1];
+  const responseText = typeof finalMessage?.content === "string" ? finalMessage.content : "";
 
   return { toolsCalled, responseText };
 }

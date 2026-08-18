@@ -28,7 +28,7 @@ export class AuditRepo {
 
   /** Entries not tied to a claim (e.g. "mailbox_reassigned") still have a
    * userId — this is how those get found. Also the shape a future DSAR export
-   * (see CLAUDE.md §2.4) will need: every audit entry attributable to a user. */
+   * will need: every audit entry attributable to a user. */
   async listByUser(userId: string): Promise<AuditLogRow[]> {
     return db.select().from(auditLog).where(eq(auditLog.userId, userId));
   }

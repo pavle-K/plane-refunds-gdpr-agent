@@ -8,7 +8,7 @@
  * ownership + reassignment, oauth_pending_flows, and the claims ownership
  * mirror. Each test uses fresh random identifiers, so runs don't collide with
  * each other or with prior runs; there's no cleanup/rollback since these repos
- * don't support an injectable transaction yet (see CLAUDE.md §5.5 — a proper
+ * don't support an injectable transaction yet (a proper
  * ephemeral-schema/testcontainers integration setup is separate future work).
  */
 import { randomUUID } from "node:crypto";

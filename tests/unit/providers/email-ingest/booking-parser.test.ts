@@ -28,7 +28,7 @@ function buildEmail(fixture: EmailFixture): EmailMessage {
 /**
  * Stands in for the real (Stage 2/3) LLM extractor — a fake, deterministic
  * regex-based parser over clearly-labeled fixture fields, in both English and
- * German. No LLM call happens in this test, per CLAUDE.md's testing rules.
+ * German. No LLM call happens in this test, per this repo's testing rules.
  * Ignores attachments/fetchAttachment — none of the fixtures need them.
  */
 function createFixtureExtractor(): BookingExtractor {

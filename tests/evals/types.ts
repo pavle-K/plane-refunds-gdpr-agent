@@ -1,7 +1,8 @@
-import type { LlmToolDefinition, LlmConversationTurn } from "../../src/agent/llm/index.js";
+import type { StructuredTool } from "@langchain/core/tools";
+import type { ConversationTurn } from "../../src/db/repositories/conversation.repo.js";
 
 /**
- * CLAUDE.md §5.4's "prompt regression suite" — deliberately separate from
+ * The "prompt regression suite" — deliberately separate from
  * `npm test`: these call a real, configured LLM (real cost, real latency, real
  * non-determinism), so they run on demand via `npm run test:prompts`, never in
  * CI on every commit. Types shared by every case file and by the runner.
@@ -19,7 +20,7 @@ export interface EvalCase {
    * to Langfuse as the dataset item's description. */
   description: string;
   /** Prior turns, oldest first. Empty for a fresh conversation. */
-  history?: LlmConversationTurn[];
+  history?: ConversationTurn[];
   /** The message being evaluated this trial. */
   message: string;
   /** Scores one trial's outcome. Returns a 0–1 score, not a bare pass/fail —
@@ -61,7 +62,7 @@ export interface PromptVariant {
    * same way session.ts's buildSystemPrompt() does, so every trial (and every
    * variant) sees a consistently-shaped prompt. */
   systemPromptBase: string;
-  tools: LlmToolDefinition[];
+  tools: StructuredTool[];
 }
 
 export interface TrialOutcome {

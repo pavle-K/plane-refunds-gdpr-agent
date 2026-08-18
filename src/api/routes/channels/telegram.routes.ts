@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import { LlmRateLimitedError, type LlmClient } from "../../../agent/llm/llm.port.js";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { LlmRateLimitedError } from "../../../agent/llm/rate-limit-error.js";
 import type { ChannelAdapter, InboundMessage } from "../../../channels/channel.port.js";
 import { createTelegramAdapter, parseTelegramUpdate } from "../../../channels/telegram/index.js";
 import { handleTurn } from "../../../operator/session.js";
@@ -11,7 +12,7 @@ import { logger } from "../../../lib/logger.js";
  * immediately and does the actual LLM turn + reply out-of-band, sending the
  * reply via a separate Bot API call rather than the webhook response body.
  */
-export function createTelegramWebhookRouter(llm: LlmClient): Router {
+export function createTelegramWebhookRouter(model: BaseChatModel): Router {
   const router = Router();
   const adapter = createTelegramAdapter();
 
@@ -31,15 +32,15 @@ export function createTelegramWebhookRouter(llm: LlmClient): Router {
       return;
     }
 
-    void replyToTelegramMessage(llm, adapter, inbound);
+    void replyToTelegramMessage(model, adapter, inbound);
   });
 
   return router;
 }
 
-async function replyToTelegramMessage(llm: LlmClient, adapter: ChannelAdapter, inbound: InboundMessage): Promise<void> {
+async function replyToTelegramMessage(model: BaseChatModel, adapter: ChannelAdapter, inbound: InboundMessage): Promise<void> {
   try {
-    const responseText = await handleTurn(llm, {
+    const responseText = await handleTurn(model, {
       channel: "telegram",
       externalId: inbound.externalUserId,
       text: inbound.text,

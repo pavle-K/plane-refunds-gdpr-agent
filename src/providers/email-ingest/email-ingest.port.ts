@@ -41,7 +41,7 @@ export interface EmailListResult {
 
 export interface EmailIngestProvider {
   /**
-   * Read-only, narrow-scope inbox access (see CLAUDE.md §2.3/§2.4 — this is the
+   * Read-only, narrow-scope inbox access — this is the
    * one provider that touches raw user PII directly; keep field-level minimization
    * in mind for anything built on top of this, e.g. src/compliance/redaction.ts).
    */

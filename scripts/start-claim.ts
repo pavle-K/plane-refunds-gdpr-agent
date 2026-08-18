@@ -31,7 +31,7 @@ import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js
 import { createRealGraphDeps } from "../src/agent/real-deps.js";
 import { FakeFlightStatusAdapter, buildOnTimeResult } from "../src/providers/flight-status/index.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
-import { FakeLlmClient } from "../src/agent/llm/index.js";
+import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
 import { ok } from "../src/lib/result.js";
 import { env } from "../src/config/env.js";
 import type { Booking } from "../src/domain/claim/claim.types.js";
@@ -95,16 +95,16 @@ async function main() {
     console.log("   Using REAL AeroAPI flight-status lookup.");
   }
 
-  console.log(`   LLM: ${llm instanceof FakeLlmClient ? `FAKE (LLM_PROVIDER=${env.LLM_PROVIDER}, but its key/config isn't set)` : `REAL call via LLM_PROVIDER=${env.LLM_PROVIDER}`}`);
-  if (llm instanceof FakeLlmClient) {
+  console.log(`   LLM: ${llm instanceof FakeChatModel ? `FAKE (LLM_PROVIDER=${env.LLM_PROVIDER}, but its key/config isn't set)` : `REAL call via LLM_PROVIDER=${env.LLM_PROVIDER}`}`);
+  if (llm instanceof FakeChatModel) {
     console.log("   Queuing generic canned score/draft responses so the script can still run.");
-    llm.enqueueJson({
+    llm.enqueueFinalJson({
       successLikelihood: 0.5,
       confidence: 0.3,
       reasoning: "Generic fallback score — no ANTHROPIC_API_KEY was set, so this isn't a real assessment.",
       citedEvidence: [],
     });
-    llm.enqueueJson({
+    llm.enqueueFinalJson({
       letterText: `[GENERIC PLACEHOLDER — configure LLM_PROVIDER's key/config for a real draft]\n\nDear ${carrierCode},\n\nI am writing to claim EC261 compensation for flight ${flightNumber} on ${scheduledDepartureDateUtc}, booking reference ${bookingReference}.`,
     });
   }

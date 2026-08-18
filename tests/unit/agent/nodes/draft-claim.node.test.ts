@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createDraftClaimNode } from "../../../../src/agent/nodes/draft-claim.node.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../../src/agent/llm/fake-chat-model.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { StaticAirlineDirectoryAdapter } from "../../../../src/providers/airline-directory/static.adapter.js";
 import {
@@ -41,19 +41,19 @@ const FLIGHT_STATUS: FlightStatusResult = {
 /** Real dataset — every carrier in it is a web form, so this exercises the
  * packet/refusal paths, not the letter path. */
 function buildDeps() {
-  return { llm: new FakeLlmClient(), airlineDirectory: new StaticAirlineDirectoryAdapter(), auditLog: new FakeAuditLog() };
+  return { llm: new FakeChatModel(), airlineDirectory: new StaticAirlineDirectoryAdapter(), auditLog: new FakeAuditLog() };
 }
 
 /** An email carrier, which is the only kind that reaches the LLM letter path.
  * No real carrier qualifies today (see fake.adapter.ts), so this is a stub. */
 function buildLetterDeps() {
-  return { llm: new FakeLlmClient(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
+  return { llm: new FakeChatModel(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
 }
 
 describe("draft-claim node", () => {
   it("drafts using the original-claim prompt when there's no prior rejection", async () => {
     const deps = buildLetterDeps();
-    deps.llm.enqueueJson({ letterText: "Dear Lufthansa, ..." });
+    deps.llm.enqueueFinalJson({ letterText: "Dear Lufthansa, ..." });
     const node = createDraftClaimNode(deps);
 
     const result = await node(
@@ -67,7 +67,7 @@ describe("draft-claim node", () => {
 
   it("switches to the rebuttal prompt when the last response was rejected", async () => {
     const deps = buildLetterDeps();
-    deps.llm.enqueueJson({ letterText: "Dear Lufthansa, in response to your rejection..." });
+    deps.llm.enqueueFinalJson({ letterText: "Dear Lufthansa, in response to your rejection..." });
     const node = createDraftClaimNode(deps);
 
     const state = buildState({
@@ -133,8 +133,8 @@ describe("draft-claim node — submission plan", () => {
   });
 
   it("exposes an auto-sendable channel when the carrier accepts claims by email", async () => {
-    const deps = { llm: new FakeLlmClient(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
-    deps.llm.enqueueJson({ letterText: "Dear Lufthansa, ..." });
+    const deps = { llm: new FakeChatModel(), airlineDirectory: buildAnyCodeEmailAirlineDirectory(), auditLog: new FakeAuditLog() };
+    deps.llm.enqueueFinalJson({ letterText: "Dear Lufthansa, ..." });
     const node = createDraftClaimNode(deps);
 
     const result = await node(
@@ -166,7 +166,7 @@ describe("draft-claim node — submission plan", () => {
 describe("draft-claim node — web-form carriers get a submission packet, not a letter", () => {
   it("builds a deterministic packet with the link and claim facts, without calling the LLM", async () => {
     const deps = {
-      llm: new FakeLlmClient(),
+      llm: new FakeChatModel(),
       airlineDirectory: buildAnyCodeWebFormAirlineDirectory(["claimantFullName", "payoutIban"]),
       auditLog: new FakeAuditLog(),
     };
@@ -198,7 +198,7 @@ describe("draft-claim node — web-form carriers get a submission packet, not a 
     // Distinct from "the form asks for nothing" — claiming the latter about a
     // form that demands eight fields would be its own kind of confidently wrong.
     const deps = {
-      llm: new FakeLlmClient(),
+      llm: new FakeChatModel(),
       airlineDirectory: buildAnyCodeWebFormAirlineDirectory(null),
       auditLog: new FakeAuditLog(),
     };
@@ -213,11 +213,11 @@ describe("draft-claim node — web-form carriers get a submission packet, not a 
 
   it("still uses the LLM-drafted letter path for a rebuttal, even for a web-form carrier (unreachable today, but must fail safe)", async () => {
     const deps = {
-      llm: new FakeLlmClient(),
+      llm: new FakeChatModel(),
       airlineDirectory: buildAnyCodeWebFormAirlineDirectory(),
       auditLog: new FakeAuditLog(),
     };
-    deps.llm.enqueueJson({ letterText: "Dear Ryanair, in response to your rejection..." });
+    deps.llm.enqueueFinalJson({ letterText: "Dear Ryanair, in response to your rejection..." });
     const node = createDraftClaimNode(deps);
 
     const state = buildState({

@@ -31,7 +31,7 @@ export type GraphDeps = IngestNodeDeps &
   ProcessPayoutNodeDeps;
 
 /**
- * Node/edge wiring ONLY — no business logic (CLAUDE.md §3.3). Every node is thin;
+ * Node/edge wiring ONLY — no business logic. Every node is thin;
  * all deps are injected so the whole graph can be built against fakes in tests
  * without touching a real provider, LLM, or database.
  */

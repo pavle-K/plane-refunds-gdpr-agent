@@ -15,7 +15,7 @@ export const users = pgTable("users", {
 /**
  * Append-only by application-level convention: db/repositories/audit.repo.ts only
  * exposes insert/select, never update/delete. DB-level enforcement (a trigger
- * rejecting UPDATE/DELETE) is Stage 3 hardening — see CLAUDE.md §5.6.
+ * rejecting UPDATE/DELETE) is Stage 3 hardening.
  */
 export const auditLog = pgTable("audit_log", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -78,6 +78,15 @@ export const channelIdentities = pgTable(
     channel: text("channel").notNull(), // "cli" | "telegram" | "discord" | "whatsapp" | "viber" | "facebook" | "email"
     externalId: text("external_id").notNull(),
     createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
+    // Set once, the first time the consent notice is shown to this identity —
+    // gates auto-consent (src/compliance/consent.ts's decideConsent) before a
+    // userId has actually consented. Nullable: unset means never shown.
+    // Deliberately a dedicated column rather than a history scan: the LangChain
+    // agent's checkpointer thread (src/operator/session.ts) is the agent's own
+    // reasoning memory, not a general-purpose compliance transcript, and
+    // consent-gate-blocked turns never invoke the agent at all so there would
+    // be nothing to scan.
+    noticeShownAtUtc: timestamp("notice_shown_at_utc", { withTimezone: true }),
   },
   (table) => [unique().on(table.channel, table.externalId)],
 );

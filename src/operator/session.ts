@@ -1,16 +1,35 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { LlmClient, LlmConversationTurn } from "../agent/llm/llm.port.js";
+import { createAgent, contextEditingMiddleware, ClearToolUsesEdit } from "langchain";
+import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { getCheckpointer } from "../agent/checkpointer.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
 import { UserRepo } from "../db/repositories/user.repo.js";
 import { PendingConfirmationRepo } from "../db/repositories/pending-confirmation.repo.js";
-import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply, CONSENT_NOTICE } from "../compliance/consent.js";
-import { TOOL_DEFINITIONS, OperatorTools, describeConfirmedActionResult } from "./tools.js";
+import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply } from "../compliance/consent.js";
+import { buildOperatorTools, OperatorTools, describeConfirmedActionResult, operatorThreadId } from "./tools.js";
 import { logger, type Logger } from "../lib/logger.js";
-import { createTracer, type Tracer } from "../agent/llm/index.js";
-import { truncateHistoryByTokens } from "../agent/llm/history.js";
+import { createTracer, type Tracer } from "../agent/llm/tracing.adapter.js";
 import { env } from "../config/env.js";
+
+/**
+ * Bounds how much of a thread's history gets sent to the model per turn —
+ * the LangGraph checkpointer thread otherwise grows unboundedly across a
+ * long-running conversation, the same problem env.MAX_HISTORY_TOKENS was
+ * originally introduced to solve (see that var's doc comment: a real
+ * conversation replayed 40 full turns, including a drafted claim letter, on
+ * every single request). Clears old tool-call payloads once the trigger is
+ * hit rather than dropping whole messages outright — a naive "drop the
+ * oldest messages" trim risks leaving a dangling ToolMessage with no
+ * matching preceding AIMessage.tool_calls, which providers reject as an
+ * invalid message sequence; ClearToolUsesEdit is LangChain's own maintained
+ * answer to that, not something worth re-deriving by hand.
+ */
+const historyMiddleware = contextEditingMiddleware({
+  edits: [new ClearToolUsesEdit({ trigger: { tokens: env.MAX_HISTORY_TOKENS }, keep: { messages: 5 } })],
+});
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
 
@@ -26,67 +45,76 @@ function buildSystemPrompt(): string {
 }
 
 /**
- * Shared by handleTurn and resumeConversationAfterEmailConnected — runs one
- * completeWithTools turn against the given tools instance, wiring the
- * dispatch/JSON-stringify/error-catch plumbing once instead of twice.
+ * Runs one turn of the operator's conversational agent (createAgent, from
+ * `langchain`) against the given channel identity's own thread on the
+ * shared LangGraph checkpointer — the agent's reasoning memory now lives
+ * there, continued automatically across turns, rather than being manually
+ * reloaded/truncated/re-passed the way the pre-LangChain hand-rolled tool
+ * loop did.
  *
- * Every tool call is logged at "info" (name + userId, no arguments) — that
- * alone is enough to answer "did the model call the tool or not" without
- * reading tea leaves out of a chat transcript, which is what this was built
- * for. Full arguments and the result go to "debug" (redacted — see
- * lib/logger.ts). A tool that throws is logged at "error" with the cause
- * before being handed back to the model as the same {error} string as
- * before — this used to be silently swallowed with no server-side trace at
- * all.
+ * Every tool call is logged and traced inside buildOperatorTools itself
+ * (src/operator/tools.ts) — this function's own job is just the turn-level
+ * concerns: building the agent, invoking it, and recording the LLM call as a
+ * single Langfuse generation (mirroring the old runLlmTurn's shape).
  *
- * Also records onto `tracer` (Langfuse, or a no-op — see
- * agent/llm/tracing.adapter.ts): each tool dispatch as a `span`, and the whole
- * completeWithTools call as a `generation`, both on the ONE trace the caller
- * created for this turn. This is queryable, persistent observability
- * (filterable/comparable in Langfuse's UI); `log` above is the local/immediate
- * text-log equivalent. Both are populated from the same data on purpose —
- * they serve different consumption modes, not redundant copies of one thing.
+ * "New" messages for this turn (used for onToolCall visibility and the
+ * turn's tool-call count) are everything after the most recent HumanMessage
+ * in the returned thread — that's provably the message this call just sent,
+ * since nothing else in a single turn injects a synthetic Human message.
  */
-async function runLlmTurn(
-  llm: LlmClient,
+async function runAgentTurn(
+  model: BaseChatModel,
   params: {
     prompt: string;
-    history: LlmConversationTurn[];
+    threadId: string;
     tools: OperatorTools;
     log: Logger;
     tracer: Tracer;
     onToolCall?: (call: { name: string; input: Record<string, unknown> }) => void;
   },
 ): Promise<{ responseText: string; toolCallCount: number }> {
-  let toolCallCount = 0;
-  const system = buildSystemPrompt();
   const startedAt = Date.now();
+  const system = buildSystemPrompt();
 
-  const responseText = await llm.completeWithTools({
-    system,
-    prompt: params.prompt,
-    tools: TOOL_DEFINITIONS,
-    history: params.history,
-    onToolCall: async (call) => {
-      toolCallCount += 1;
-      params.onToolCall?.(call);
-      params.log.info("tool called", { tool: call.name });
-      try {
-        const result = await params.tools.dispatch(call.name, call.input);
-        params.log.debug("tool result", { tool: call.name, input: call.input, result });
-        params.tracer.span({ name: call.name, input: call.input, output: result });
-        return JSON.stringify(result);
-      } catch (cause) {
-        params.log.error("tool dispatch threw", { tool: call.name, input: call.input, cause: String(cause) });
-        params.tracer.span({ name: call.name, input: call.input, output: { error: String(cause) } });
-        return JSON.stringify({ error: String(cause) });
-      }
-    },
+  const agent = createAgent({
+    model,
+    tools: buildOperatorTools(params.tools, params.log, params.tracer),
+    systemPrompt: system,
+    checkpointer: getCheckpointer(),
+    middleware: [historyMiddleware],
   });
+
+  const result = await agent.invoke(
+    { messages: [new HumanMessage(params.prompt)] },
+    { configurable: { thread_id: params.threadId } },
+  );
+
+  const messages = result.messages as BaseMessage[];
+  let lastHumanIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (HumanMessage.isInstance(messages[i])) {
+      lastHumanIndex = i;
+      break;
+    }
+  }
+  const turnMessages = lastHumanIndex >= 0 ? messages.slice(lastHumanIndex + 1) : [];
+
+  let toolCallCount = 0;
+  for (const message of turnMessages) {
+    if (AIMessage.isInstance(message) && message.tool_calls && message.tool_calls.length > 0) {
+      for (const call of message.tool_calls) {
+        toolCallCount += 1;
+        params.onToolCall?.({ name: call.name, input: call.args });
+      }
+    }
+  }
+
+  const finalMessage = messages[messages.length - 1];
+  const responseText = typeof finalMessage?.content === "string" ? finalMessage.content : "";
 
   params.tracer.generation({
     name: "operator.completeWithTools",
-    input: { system, prompt: params.prompt, historyLength: params.history.length },
+    input: { system, prompt: params.prompt },
     output: responseText,
     durationMs: Date.now() - startedAt,
   });
@@ -105,15 +133,17 @@ export interface IncomingTurn {
 
 /**
  * The one piece of conversation logic every entry point shares — CLI
- * (scripts/chat.ts) and every messaging channel webhook alike. Loads that
- * identity's persisted history, runs the same tool-use loop the CLI always
- * has, and persists the new turn. Nothing channel-specific lives here; a
- * channel adapter's only job is turning its platform's payload into
- * {channel, externalId, text} and sending the returned string back out.
+ * (scripts/chat.ts) and every messaging channel webhook alike. Runs the
+ * operator agent against this identity's own checkpointer thread, and
+ * separately appends the turn to conversation_messages
+ * (ConversationRepo) — a compliance/audit transcript, NOT what's fed to the
+ * model (the checkpointer thread is), kept because it's the one place every
+ * turn is recorded unconditionally, including turns the agent never even
+ * runs on (consent-gated, pending-confirmation-gated).
  *
  * Gates on consent before any of that: an unconsented user's message never
- * reaches the LLM or a tool — see src/compliance/consent.ts's decideConsent,
- * which is where the actual decision logic (and its tests) live.
+ * reaches the agent — see src/compliance/consent.ts's decideConsent, which is
+ * where the actual decision logic (and its tests) live.
  *
  * Constructs a fresh OperatorTools every turn rather than caching one per
  * identity — it holds no per-conversation state of its own (see its own doc
@@ -121,10 +151,11 @@ export interface IncomingTurn {
  * one per process would break the moment this runs as more than one
  * horizontally-scaled instance, since a later turn from the same identity
  * could land on a different process. All the state that needs to survive
- * across turns already lives in Postgres.
+ * across turns already lives in Postgres (either the checkpointer, for the
+ * agent's own memory, or conversation_messages, for the transcript).
  */
 export async function handleTurn(
-  llm: LlmClient,
+  model: BaseChatModel,
   turn: IncomingTurn,
   consentGate: ConsentGate = new DbConsentGate(),
 ): Promise<string> {
@@ -147,12 +178,12 @@ export async function handleTurn(
   log = log.child({ userId });
 
   const alreadyConsented = await consentGate.hasConsented(userId);
-  const history = await repo.loadHistory(channelIdentityId);
-  // Whether *this notice* was already shown, not merely "has this identity
-  // ever spoken" — an identity that talked to this bot before the consent
-  // system existed has history but has never seen it either. See
-  // decideConsent's doc comment.
-  const noticeAlreadyShown = history.some((h) => h.role === "assistant" && h.content === CONSENT_NOTICE);
+  // channel_identities.noticeShownAtUtc, not a history scan — see that
+  // column's doc comment (schema.ts) for why: the agent's checkpointer
+  // thread is its own reasoning memory, not a general compliance transcript,
+  // and a consent-gated turn never invokes the agent at all, so there would
+  // be nothing in it to scan.
+  const noticeAlreadyShown = await repo.wasNoticeShown(channelIdentityId);
   const consentDecision = decideConsent({
     alreadyConsented,
     noticeAlreadyShown,
@@ -163,6 +194,9 @@ export async function handleTurn(
     log.info("consent gate blocked turn", { action: consentDecision.action });
     if (consentDecision.action === "consent_recorded") {
       await consentGate.recordConsent(userId, turn.channel);
+    }
+    if (consentDecision.action === "show_notice") {
+      await repo.markNoticeShown(channelIdentityId);
     }
     await repo.appendTurn(channelIdentityId, "user", turn.text);
     await repo.appendTurn(channelIdentityId, "assistant", consentDecision.responseText);
@@ -218,13 +252,9 @@ export async function handleTurn(
     sessionId: channelIdentityId,
     metadata: { channel: turn.channel, turnId },
   });
-  // Full `history` (not the truncated view) is what noticeAlreadyShown above
-  // checked — that has to see the whole record, or an old identity could get
-  // shown the consent notice again just because it scrolled out of the token
-  // budget. The LLM call itself only needs what fits that budget.
-  const { responseText, toolCallCount } = await runLlmTurn(llm, {
+  const { responseText, toolCallCount } = await runAgentTurn(model, {
     prompt: turn.text,
-    history: truncateHistoryByTokens(history, env.MAX_HISTORY_TOKENS),
+    threadId: operatorThreadId(channelIdentityId),
     tools,
     log,
     tracer,
@@ -256,15 +286,14 @@ function buildEmailConnectedNote(emailAddress: string): string {
  * after a user has already consented and asked to connect an account).
  *
  * Rather than just announcing "connected" and stopping there, this feeds the
- * LLM the real conversation history plus a note that the connection just
- * completed, with full tool access — so if the user's last request needed
- * this connection (e.g. "analyze my emails"), it gets carried out and
+ * agent the note below with full tool access — so if the user's last request
+ * needed this connection (e.g. "analyze my emails"), it gets carried out and
  * reported immediately instead of requiring the user to ask again. Callers
  * should fall back to a fixed confirmation if this throws (e.g. the LLM call
  * fails) — never let a broken resumption mean no confirmation arrives at all.
  */
 export async function resumeConversationAfterEmailConnected(
-  llm: LlmClient,
+  model: BaseChatModel,
   params: { channelIdentityId: string; userId: string; emailAddress: string },
 ): Promise<string> {
   const turnId = randomUUID().slice(0, 8);
@@ -273,7 +302,6 @@ export async function resumeConversationAfterEmailConnected(
   log.info("resuming conversation after email connected");
 
   const repo = new ConversationRepo();
-  const history = await repo.loadHistory(params.channelIdentityId);
   const tools = new OperatorTools(params.userId, params.channelIdentityId);
   const note = buildEmailConnectedNote(params.emailAddress);
   const tracer = createTracer({
@@ -283,9 +311,9 @@ export async function resumeConversationAfterEmailConnected(
     metadata: { source: "email_connected_resume", turnId },
   });
 
-  const { responseText, toolCallCount } = await runLlmTurn(llm, {
+  const { responseText, toolCallCount } = await runAgentTurn(model, {
     prompt: note,
-    history: truncateHistoryByTokens(history, env.MAX_HISTORY_TOKENS),
+    threadId: operatorThreadId(params.channelIdentityId),
     tools,
     log,
     tracer,

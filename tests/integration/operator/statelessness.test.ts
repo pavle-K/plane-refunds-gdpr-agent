@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { env } from "../../../src/config/env.js";
 import { OperatorTools } from "../../../src/operator/tools.js";
 import { handleTurn } from "../../../src/operator/session.js";
-import { FakeLlmClient } from "../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../src/agent/llm/fake-chat-model.js";
 import { FakeConsentGate } from "../../../src/compliance/consent.fake.js";
 import { ConversationRepo } from "../../../src/db/repositories/conversation.repo.js";
 import { UserRepo } from "../../../src/db/repositories/user.repo.js";
@@ -45,7 +45,7 @@ describe.skipIf(!canRun)("statelessness across OperatorTools instances (real Pos
   it("handleTurn resolves the omitted-threadId case correctly across two separate calls, with no cached OperatorTools between them", async () => {
     const channel = "telegram";
     const externalId = `test-${randomUUID()}`;
-    const llm = new FakeLlmClient();
+    const model = new FakeChatModel();
     const consentGate = new FakeConsentGate();
 
     // Pre-consent (see Segment 2) so these turns reach the LLM/tool loop
@@ -56,19 +56,19 @@ describe.skipIf(!canRun)("statelessness across OperatorTools instances (real Pos
     if (!userId) throw new Error("expected a linked user");
     await consentGate.recordConsent(userId, channel);
 
-    llm.enqueueToolCall({ name: "start_claim", input: ONE_SEGMENT });
-    llm.enqueueFinalText("Started your claim.");
-    const firstResponse = await handleTurn(llm, { channel, externalId, text: "start a claim" }, consentGate);
+    model.enqueueToolCall({ name: "start_claim", args: ONE_SEGMENT });
+    model.enqueueFinalText("Started your claim.");
+    const firstResponse = await handleTurn(model, { channel, externalId, text: "start a claim" }, consentGate);
     expect(firstResponse).toBe("Started your claim.");
 
     // A brand-new handleTurn call — session.ts constructs a fresh OperatorTools
     // internally every time (no process-memory Map), so this only works if
     // "the most recently touched claim" comes from Postgres.
-    llm.enqueueToolCall({ name: "get_claim_status", input: {} });
-    llm.enqueueFinalText("Here's your status.");
-    const secondResponse = await handleTurn(llm, { channel, externalId, text: "what's the status?" }, consentGate);
+    model.enqueueToolCall({ name: "get_claim_status", args: {} });
+    model.enqueueFinalText("Here's your status.");
+    const secondResponse = await handleTurn(model, { channel, externalId, text: "what's the status?" }, consentGate);
 
     expect(secondResponse).toBe("Here's your status.");
-    expect(llm.toolCallsMade.map((c) => c.name)).toEqual(["start_claim", "get_claim_status"]);
+    expect(model.toolCallsMade.map((c) => c.name)).toEqual(["start_claim", "get_claim_status"]);
   });
 });

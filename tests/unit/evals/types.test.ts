@@ -4,8 +4,8 @@ import type { EvalTrialResult } from "../../../tests/evals/types.js";
 
 /**
  * Pure logic only — the eval RUNNER (tests/evals/runner.ts) calls a real,
- * configured LLM and belongs to the on-demand `npm run test:prompts` suite
- * (CLAUDE.md §5.4), never to `npm test`. These assertion builders have no I/O
+ * configured LLM and belongs to the on-demand `npm run test:prompts` suite,
+ * never to `npm test`. These assertion builders have no I/O
  * at all, so there's no reason to exclude them from the fast, free, always-run
  * default suite — see vitest.config.ts's include pattern, which is scoped to
  * tests/unit/ + tests/integration/ and deliberately excludes tests/evals/.
