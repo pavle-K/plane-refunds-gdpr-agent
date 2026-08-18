@@ -2,6 +2,7 @@
   "name": "plane-refunds-gdpr-agent",
   "version": "0.1.0",
   "description": "EC 261/2004 flight compensation claim agent — LangGraph.js, TypeScript, GDPR-first.",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "packageManager": "npm@11.16.0",
