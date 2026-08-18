@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { GraphStateType } from "../state.js";
-import type { LlmClient } from "../llm/llm.port.js";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
@@ -8,7 +8,7 @@ import { applyTransition } from "../../domain/claim/state-machine.js";
 import type { ClaimStatus } from "../../domain/claim/claim.types.js";
 
 export interface ClassifyResponseNodeDeps {
-  llm: LlmClient;
+  llm: BaseChatModel;
   auditLog: AuditLog;
 }
 

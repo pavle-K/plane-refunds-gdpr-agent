@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { LlmRateLimitedError } from "../../../agent/llm/llm.port.js";
+import { LlmRateLimitedError } from "../../../agent/llm/rate-limit-error.js";
 import type { ChannelAdapter, InboundMessage } from "../../../channels/channel.port.js";
 import { createTelegramAdapter, parseTelegramUpdate } from "../../../channels/telegram/index.js";
 import { handleTurn } from "../../../operator/session.js";

@@ -19,7 +19,7 @@ import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
 import { createTelegramWebhookRouter, describeUserFacingError } from "../../../../../src/api/routes/channels/telegram.routes.js";
 import { FakeChatModel } from "../../../../../src/agent/llm/fake-chat-model.js";
-import { LlmRateLimitedError } from "../../../../../src/agent/llm/llm.port.js";
+import { LlmRateLimitedError } from "../../../../../src/agent/llm/rate-limit-error.js";
 import { env } from "../../../../../src/config/env.js";
 
 const canRun = Boolean(env.TELEGRAM_WEBHOOK_SECRET);

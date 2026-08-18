@@ -17,7 +17,7 @@ import { buildAnyCodeEmailAirlineDirectory } from "../src/providers/airline-dire
 import { FakeAirportReferenceAdapter, buildAirportFacts } from "../src/providers/airport-reference/fake.adapter.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/fake.adapter.js";
 import { FakePaymentsAdapter } from "../src/providers/payments/fake.adapter.js";
-import { FakeLlmClient } from "../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
 import { DbAuditLog } from "../src/compliance/audit-log.js";
 import { ok } from "../src/lib/result.js";
 import type { Booking } from "../src/domain/claim/claim.types.js";
@@ -66,15 +66,15 @@ async function main() {
     ok(buildClearSkyObservation({ icaoCode: "EDDF" })),
   );
 
-  const llm = new FakeLlmClient();
-  llm.enqueueJson({
+  const llm = new FakeChatModel();
+  llm.enqueueFinalJson({
     successLikelihood: 0.8,
     confidence: 0.7,
     reasoning: "Clear weather rules out an extraordinary-circumstances defence.",
     citedEvidence: ["METAR showed clear skies at departure"],
   });
-  llm.enqueueJson({ letterText: "Dear Lufthansa, I am writing to claim EC261 compensation of €600..." });
-  llm.enqueueJson({ category: "accepted", reasoning: "Airline agreed to pay.", requestedInfo: null });
+  llm.enqueueFinalJson({ letterText: "Dear Lufthansa, I am writing to claim EC261 compensation of €600..." });
+  llm.enqueueFinalJson({ category: "accepted", reasoning: "Airline agreed to pay.", requestedInfo: null });
 
   const emailSend = new FakeEmailSendAdapter();
   const payments = new FakePaymentsAdapter();

@@ -11,7 +11,7 @@ import { buildGraph } from "../src/agent/graph.js";
 import { getCheckpointer } from "../src/agent/checkpointer.js";
 import { createRealGraphDeps } from "../src/agent/real-deps.js";
 import { FakeEmailSendAdapter } from "../src/providers/email-send/index.js";
-import { FakeLlmClient } from "../src/agent/llm/index.js";
+import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
 import { env } from "../src/config/env.js";
 
 function getArg(name: string): string {
@@ -62,10 +62,10 @@ async function main() {
     if (hasReply === "y") {
       const airlineReplyText = await rl.question("Paste the airline's reply text:\n> ");
       resumeValue = { type: "reply", airlineReplyText };
-      if (llm instanceof FakeLlmClient) {
+      if (llm instanceof FakeChatModel) {
         console.log(`LLM_PROVIDER=${env.LLM_PROVIDER}'s key/config isn't set — queuing a generic 'accepted' classification as a fallback.`);
         console.log("(If the real reply is a rejection, classification will be wrong without a real provider configured.)");
-        llm.enqueueJson({ category: "accepted", reasoning: "Generic fallback — no real LLM provider configured.", requestedInfo: null });
+        llm.enqueueFinalJson({ category: "accepted", reasoning: "Generic fallback — no real LLM provider configured.", requestedInfo: null });
       }
     } else {
       resumeValue = { type: "timeout" };

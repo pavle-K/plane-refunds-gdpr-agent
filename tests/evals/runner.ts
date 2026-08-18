@@ -1,7 +1,7 @@
 import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { createAgent } from "langchain";
 import { createChatModel } from "../../src/agent/llm/chat-model.js";
-import { LlmRateLimitedError } from "../../src/agent/llm/llm.port.js";
+import { LlmRateLimitedError } from "../../src/agent/llm/rate-limit-error.js";
 import { getLangfuseClient } from "../../src/agent/llm/langfuse-client.js";
 import type { EvalCase, EvalAssertion, CaseRunResult, EvalTrialResult, PromptVariant, ToolCallRecord } from "./types.js";
 

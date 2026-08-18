@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { HumanMessage } from "@langchain/core/messages";
+import { z } from "zod";
+import { createAgent, tool } from "langchain";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { FakeChatModel } from "../../../../src/agent/llm/fake-chat-model.js";
 
 describe("FakeChatModel", () => {
@@ -69,12 +71,96 @@ describe("FakeChatModel", () => {
     expect((model.invocations[1]?.[0]?.content as string)).toBe("second");
   });
 
-  it("supports bindTools without inspecting the schemas — behavior stays fully scripted", async () => {
+  it("supports bindTools — behavior stays fully scripted regardless of the tool schemas passed", async () => {
     const model = new FakeChatModel();
     model.enqueueFinalText("bound ok");
 
     const bound = model.bindTools([{ name: "some_tool", description: "d", schema: {} }]);
     const result = await bound.invoke([new HumanMessage("hi")]);
     expect(result.content).toBe("bound ok");
+  });
+});
+
+describe("FakeChatModel.withStructuredOutput", () => {
+  const schema = z.object({ eligible: z.boolean(), confidence: z.number() });
+
+  it("returns a scripted final JSON response, validated against the schema", async () => {
+    const model = new FakeChatModel();
+    model.enqueueFinalJson({ eligible: true, confidence: 0.9 });
+
+    const result = await model.withStructuredOutput(schema).invoke([new SystemMessage("sys"), new HumanMessage("p")]);
+    expect(result).toEqual({ eligible: true, confidence: 0.9 });
+  });
+
+  it("throws when the scripted JSON doesn't match the schema — never returns unvalidated data", async () => {
+    const model = new FakeChatModel();
+    model.enqueueFinalJson({ eligible: "yes" }); // wrong type, missing field
+
+    await expect(
+      model.withStructuredOutput(schema).invoke([new SystemMessage("sys"), new HumanMessage("p")]),
+    ).rejects.toThrow();
+  });
+
+  it("records the system+prompt pair in .calls", async () => {
+    const model = new FakeChatModel();
+    model.enqueueFinalJson({ eligible: true, confidence: 1 });
+
+    await model.withStructuredOutput(schema).invoke([new SystemMessage("base instructions"), new HumanMessage("p")]);
+
+    expect(model.calls).toEqual([{ system: "base instructions", prompt: "p" }]);
+  });
+
+  it("throws a clear error if a tool-call step was scripted instead of a final response", async () => {
+    const model = new FakeChatModel();
+    model.enqueueToolCall({ name: "lookup", args: {} });
+
+    await expect(
+      model.withStructuredOutput(schema).invoke([new SystemMessage("sys"), new HumanMessage("p")]),
+    ).rejects.toThrow("don't support a tool loop");
+  });
+});
+
+describe("FakeChatModel.enqueueStructuredToolCall (createAgent responseFormat)", () => {
+  it("resolves createAgent's synthetic extract-N tool name dynamically, not a hardcoded guess", async () => {
+    const model = new FakeChatModel();
+    model.enqueueStructuredToolCall({ booking: { bookingReference: "9F3K7Q" } });
+
+    const agent = createAgent({
+      model,
+      tools: [],
+      systemPrompt: "test",
+      responseFormat: z.object({ booking: z.object({ bookingReference: z.string() }).nullable() }),
+    });
+
+    const result = await agent.invoke({ messages: [new HumanMessage("go")] });
+    expect(result.structuredResponse).toEqual({ booking: { bookingReference: "9F3K7Q" } });
+  });
+
+  it("still resolves correctly when a real tool call happens first — the synthetic name increments per model call", async () => {
+    const model = new FakeChatModel();
+    model.enqueueToolCall({ name: "get_attachment_text", args: { filename: "Receipt.pdf" } });
+    model.enqueueStructuredToolCall({ booking: { bookingReference: "9F3K7Q" } });
+
+    const getAttachmentText = tool(async ({ filename }: { filename: string }) => ({ text: `contents of ${filename}` }), {
+      name: "get_attachment_text",
+      description: "fetch attachment text",
+      schema: z.object({ filename: z.string() }),
+    });
+
+    const agent = createAgent({
+      model,
+      tools: [getAttachmentText],
+      systemPrompt: "test",
+      responseFormat: z.object({ booking: z.object({ bookingReference: z.string() }).nullable() }),
+    });
+
+    const result = await agent.invoke({ messages: [new HumanMessage("go")] });
+    expect(result.structuredResponse).toEqual({ booking: { bookingReference: "9F3K7Q" } });
+    // The exact "extract-N" number isn't stable across a whole test run (it's a
+    // counter shared by every createAgent responseFormat call in the process,
+    // not scoped per agent) — only the pattern and the relative order matter.
+    const [first, second] = model.toolCallsMade.map((c) => c.name);
+    expect(first).toBe("get_attachment_text");
+    expect(second).toMatch(/^extract-\d+$/);
   });
 });

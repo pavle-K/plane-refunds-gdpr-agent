@@ -10,7 +10,8 @@
 import { createEmailIngestProvider, FakeEmailIngestAdapter } from "../src/providers/email-ingest/index.js";
 import { looksLikeBookingEmail } from "../src/providers/email-ingest/booking-parser.js";
 import { createLlmBookingExtractor } from "../src/providers/email-ingest/llm-extractor.js";
-import { createLlmClient, FakeLlmClient } from "../src/agent/llm/index.js";
+import { createChatModel } from "../src/agent/llm/chat-model.js";
+import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
 import { env } from "../src/config/env.js";
 import { pool, assertDatabaseConfigured } from "../src/db/client.js";
 import { ConversationRepo } from "../src/db/repositories/conversation.repo.js";
@@ -66,15 +67,15 @@ async function main() {
   const { messages, truncated } = result.value;
   console.log(`Found ${messages.length} message(s).${truncated ? " ⚠️  TRUNCATED — more messages exist beyond the safety cap; narrow the date range for complete results." : ""}\n`);
 
-  const llm = createLlmClient();
-  const extractor = createLlmBookingExtractor(llm);
+  const model = createChatModel();
+  const extractor = createLlmBookingExtractor(model);
 
   for (const message of messages) {
     const isBooking = looksLikeBookingEmail(message.bodyText);
     console.log(`- [${isBooking ? "BOOKING?" : "skip"}] ${message.subject}  (from: ${message.from}, ${message.receivedAtUtc})`);
 
     if (isBooking) {
-      if (llm instanceof FakeLlmClient) {
+      if (model instanceof FakeChatModel) {
         console.log(`    (configure LLM_PROVIDER=${env.LLM_PROVIDER}'s key/config to see the real parsed booking)`);
         continue;
       }

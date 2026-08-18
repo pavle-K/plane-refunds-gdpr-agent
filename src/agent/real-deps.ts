@@ -5,7 +5,7 @@ import { createAirlineDirectoryProvider } from "../providers/airline-directory/i
 import { createAirportReferenceProvider } from "../providers/airport-reference/index.js";
 import { createEmailSendProvider } from "../providers/email-send/index.js";
 import { createPaymentsProvider } from "../providers/payments/index.js";
-import { createLlmClient } from "./llm/index.js";
+import { createChatModel } from "./llm/chat-model.js";
 import { createLlmBookingExtractor } from "../providers/email-ingest/llm-extractor.js";
 import { DbAuditLog } from "../compliance/audit-log.js";
 import { env } from "../config/env.js";
@@ -18,7 +18,7 @@ import type { GraphDeps } from "./graph.js";
  * (scripts/start-claim.ts, scripts/resume-claim.ts, the chat operator).
  */
 export function createRealGraphDeps(): GraphDeps {
-  const llm = createLlmClient();
+  const llm = createChatModel();
   return {
     extractor: createLlmBookingExtractor(llm),
     flightStatus: createFlightStatusProvider(),

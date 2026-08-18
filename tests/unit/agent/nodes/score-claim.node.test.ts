@@ -3,7 +3,7 @@ import { createScoreClaimNode } from "../../../../src/agent/nodes/score-claim.no
 import { FakeWeatherAdapter, buildClearSkyObservation } from "../../../../src/providers/weather/fake.adapter.js";
 import { FakeDisruptionAdapter } from "../../../../src/providers/disruption/fake.adapter.js";
 import { FakeAirportReferenceAdapter, buildAirportFacts } from "../../../../src/providers/airport-reference/fake.adapter.js";
-import { FakeLlmClient } from "../../../../src/agent/llm/fake.adapter.js";
+import { FakeChatModel } from "../../../../src/agent/llm/fake-chat-model.js";
 import { FakeAuditLog } from "../../../../src/compliance/audit-log.fake.js";
 import { ok } from "../../../../src/lib/result.js";
 import { buildState } from "../../../helpers/build-state.js";
@@ -42,7 +42,7 @@ function buildDeps() {
     weather: new FakeWeatherAdapter(),
     disruption: new FakeDisruptionAdapter(),
     airportReference: new FakeAirportReferenceAdapter(),
-    llm: new FakeLlmClient(),
+    llm: new FakeChatModel(),
     auditLog: new FakeAuditLog(),
   };
 }
@@ -55,7 +55,7 @@ describe("score-claim node", () => {
       { icaoCode: "EDDF", atUtc: FLIGHT_STATUS.scheduledDepartureUtc },
       ok(buildClearSkyObservation({ icaoCode: "EDDF" })),
     );
-    deps.llm.enqueueJson({
+    deps.llm.enqueueFinalJson({
       successLikelihood: 0.8,
       confidence: 0.7,
       reasoning: "Clear skies rule out weather as an extraordinary circumstance.",
@@ -75,7 +75,7 @@ describe("score-claim node", () => {
 
   it("proceeds without weather evidence when the airport reference is unknown", async () => {
     const deps = buildDeps();
-    deps.llm.enqueueJson({ successLikelihood: 0.5, confidence: 0.5, reasoning: "r", citedEvidence: [] });
+    deps.llm.enqueueFinalJson({ successLikelihood: 0.5, confidence: 0.5, reasoning: "r", citedEvidence: [] });
 
     const unknownAirportFlightStatus: FlightStatusResult = {
       ...FLIGHT_STATUS,

@@ -1,15 +1,21 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../client.js";
 import { channelIdentities, conversationMessages } from "../schema.js";
-import type { LlmConversationTurn } from "../../agent/llm/llm.port.js";
 import { UserRepo } from "./user.repo.js";
 
+/** One turn of the compliance/audit transcript this repo owns — every turn,
+ * including ones the operator agent never even ran on (consent-gated,
+ * pending-confirmation-gated). NOT what the operator agent itself sees for
+ * conversation continuity — that's the LangGraph checkpointer thread now
+ * (src/operator/session.ts), populated automatically by createAgent. */
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 /** How many most-recent turns to fetch from the DB at most — a coarse cap on
- * query size, not the real token bound. The real bound is
- * src/agent/llm/history.ts's truncateHistoryByTokens, applied by callers
- * (session.ts) on top of what this returns; this limit only needs to be
- * generous enough that the token budget, not this row count, is what
- * actually decides how much history survives. */
+ * query size for this transcript, not a token budget (nothing here feeds the
+ * model directly anymore). */
 const DEFAULT_HISTORY_LIMIT = 150;
 
 export class ConversationRepo {
@@ -51,8 +57,8 @@ export class ConversationRepo {
     return row.id;
   }
 
-  /** Oldest-first, ready to hand straight to LlmClient.completeWithTools({ history }). */
-  async loadHistory(channelIdentityId: string, limit = DEFAULT_HISTORY_LIMIT): Promise<LlmConversationTurn[]> {
+  /** Oldest-first. */
+  async loadHistory(channelIdentityId: string, limit = DEFAULT_HISTORY_LIMIT): Promise<ConversationTurn[]> {
     const rows = await db
       .select({ role: conversationMessages.role, content: conversationMessages.content })
       .from(conversationMessages)
@@ -60,10 +66,10 @@ export class ConversationRepo {
       .orderBy(desc(conversationMessages.createdAtUtc))
       .limit(limit);
 
-    return rows.reverse().map((row) => ({ role: row.role as LlmConversationTurn["role"], content: row.content }));
+    return rows.reverse().map((row) => ({ role: row.role as ConversationTurn["role"], content: row.content }));
   }
 
-  async appendTurn(channelIdentityId: string, role: LlmConversationTurn["role"], content: string): Promise<void> {
+  async appendTurn(channelIdentityId: string, role: ConversationTurn["role"], content: string): Promise<void> {
     await db.insert(conversationMessages).values({ channelIdentityId, role, content });
   }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { createAgent } from "langchain";
+import { createAgent, contextEditingMiddleware, ClearToolUsesEdit } from "langchain";
 import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { getCheckpointer } from "../agent/checkpointer.js";
@@ -12,6 +12,24 @@ import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply } fr
 import { buildOperatorTools, OperatorTools, describeConfirmedActionResult, operatorThreadId } from "./tools.js";
 import { logger, type Logger } from "../lib/logger.js";
 import { createTracer, type Tracer } from "../agent/llm/tracing.adapter.js";
+import { env } from "../config/env.js";
+
+/**
+ * Bounds how much of a thread's history gets sent to the model per turn —
+ * the LangGraph checkpointer thread otherwise grows unboundedly across a
+ * long-running conversation, the same problem env.MAX_HISTORY_TOKENS was
+ * originally introduced to solve (see that var's doc comment: a real
+ * conversation replayed 40 full turns, including a drafted claim letter, on
+ * every single request). Clears old tool-call payloads once the trigger is
+ * hit rather than dropping whole messages outright — a naive "drop the
+ * oldest messages" trim risks leaving a dangling ToolMessage with no
+ * matching preceding AIMessage.tool_calls, which providers reject as an
+ * invalid message sequence; ClearToolUsesEdit is LangChain's own maintained
+ * answer to that, not something worth re-deriving by hand.
+ */
+const historyMiddleware = contextEditingMiddleware({
+  edits: [new ClearToolUsesEdit({ trigger: { tokens: env.MAX_HISTORY_TOKENS }, keep: { messages: 5 } })],
+});
 
 const BASE_SYSTEM_PROMPT = readFileSync(fileURLToPath(new URL("./prompt.md", import.meta.url)), "utf-8");
 
@@ -63,6 +81,7 @@ async function runAgentTurn(
     tools: buildOperatorTools(params.tools, params.log, params.tracer),
     systemPrompt: system,
     checkpointer: getCheckpointer(),
+    middleware: [historyMiddleware],
   });
 
   const result = await agent.invoke(

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { GraphStateType } from "../state.js";
-import type { LlmClient } from "../llm/llm.port.js";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import type { AirlineDirectoryProvider } from "../../providers/airline-directory/airline-directory.port.js";
 import { buildSubmissionPlan, type SubmissionPlan } from "../../providers/airline-directory/submission-plan.js";
@@ -12,7 +12,7 @@ import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
 
 export interface DraftClaimNodeDeps {
-  llm: LlmClient;
+  llm: BaseChatModel;
   airlineDirectory: AirlineDirectoryProvider;
   auditLog: AuditLog;
 }

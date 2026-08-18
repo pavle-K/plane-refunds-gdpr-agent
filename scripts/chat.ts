@@ -18,7 +18,7 @@ import { createInterface } from "node:readline/promises";
 import { setupCheckpointer, getCheckpointer } from "../src/agent/checkpointer.js";
 import { createChatModel } from "../src/agent/llm/chat-model.js";
 import { FakeChatModel } from "../src/agent/llm/fake-chat-model.js";
-import { LlmRateLimitedError } from "../src/agent/llm/llm.port.js";
+import { LlmRateLimitedError } from "../src/agent/llm/rate-limit-error.js";
 import { handleTurn } from "../src/operator/session.js";
 import { env } from "../src/config/env.js";
 

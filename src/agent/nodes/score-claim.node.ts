@@ -3,7 +3,7 @@ import type { GraphStateType } from "../state.js";
 import type { WeatherProvider } from "../../providers/weather/weather.port.js";
 import type { DisruptionProvider } from "../../providers/disruption/disruption.port.js";
 import type { AirportReferenceProvider } from "../../providers/airport-reference/airport-reference.port.js";
-import type { LlmClient } from "../llm/llm.port.js";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { AuditLog } from "../../compliance/audit-log.js";
 import { callStructured } from "../llm/structured.js";
 import { prompts } from "../prompts/index.js";
@@ -13,7 +13,7 @@ export interface ScoreClaimNodeDeps {
   weather: WeatherProvider;
   disruption: DisruptionProvider;
   airportReference: AirportReferenceProvider;
-  llm: LlmClient;
+  llm: BaseChatModel;
   auditLog: AuditLog;
 }
 

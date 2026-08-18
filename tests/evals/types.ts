@@ -1,5 +1,5 @@
 import type { StructuredTool } from "@langchain/core/tools";
-import type { LlmConversationTurn } from "../../src/agent/llm/llm.port.js";
+import type { ConversationTurn } from "../../src/db/repositories/conversation.repo.js";
 
 /**
  * CLAUDE.md §5.4's "prompt regression suite" — deliberately separate from
@@ -20,7 +20,7 @@ export interface EvalCase {
    * to Langfuse as the dataset item's description. */
   description: string;
   /** Prior turns, oldest first. Empty for a fresh conversation. */
-  history?: LlmConversationTurn[];
+  history?: ConversationTurn[];
   /** The message being evaluated this trial. */
   message: string;
   /** Scores one trial's outcome. Returns a 0–1 score, not a bare pass/fail —

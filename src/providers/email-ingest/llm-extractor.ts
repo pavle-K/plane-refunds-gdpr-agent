@@ -1,37 +1,28 @@
 import { z } from "zod";
-import type { LlmClient, LlmToolDefinition } from "../../agent/llm/llm.port.js";
-import { callStructuredWithTools } from "../../agent/llm/structured.js";
+import { createAgent, tool } from "langchain";
+import { HumanMessage } from "@langchain/core/messages";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { prompts } from "../../agent/prompts/index.js";
 import type { BookingExtractor } from "./booking-parser.js";
 
-const bookingSchema = z
-  .object({
-    bookingReference: z.string(),
-    passengerFullName: z.string(),
-    segments: z
-      .array(
-        z.object({
-          flightNumber: z.string(),
-          scheduledDepartureDateUtc: z.string(),
-        }),
-      )
-      .min(1),
-  })
-  .nullable();
+const bookingDataSchema = z.object({
+  bookingReference: z.string(),
+  passengerFullName: z.string(),
+  segments: z
+    .array(
+      z.object({
+        flightNumber: z.string(),
+        scheduledDepartureDateUtc: z.string(),
+      }),
+    )
+    .min(1),
+});
 
-const GET_ATTACHMENT_TEXT_TOOL: LlmToolDefinition = {
-  name: "get_attachment_text",
-  description:
-    "Fetches the extracted text of an email attachment by exact filename. Only call this if the email body " +
-    "text alone is missing a required field (booking reference, a flight number, a segment date, or the " +
-    "passenger name) AND an attachment that could plausibly contain it is listed as available below. Don't " +
-    "call this speculatively if the body already has everything you need.",
-  inputSchema: {
-    type: "object",
-    properties: { filename: { type: "string", description: "Exact filename as listed" } },
-    required: ["filename"],
-  },
-};
+// createAgent's responseFormat requires an object schema at the top level
+// (StructuredResponseType extends Record<string, any>) — a bare `.nullable()`
+// object doesn't satisfy that, so "no booking found" is expressed as a null
+// inner field instead of a nullable top-level result.
+const extractionSchema = z.object({ booking: bookingDataSchema.nullable() });
 
 /** The real (Stage 2/3) implementation of BookingExtractor — an agentic LLM tool
  * loop using the extract-booking prompt. It reads the email body first, and may
@@ -39,7 +30,7 @@ const GET_ATTACHMENT_TEXT_TOOL: LlmToolDefinition = {
  * field is only present in an attachment (e.g. a PDF ticket). Tests use a fake
  * extractor instead (see booking-parser tests); this is only exercised in the
  * real/end-to-end graph path. */
-export function createLlmBookingExtractor(llm: LlmClient): BookingExtractor {
+export function createLlmBookingExtractor(model: BaseChatModel): BookingExtractor {
   return async (email, fetchAttachment) => {
     const attachmentNote =
       email.attachments.length > 0
@@ -48,25 +39,33 @@ export function createLlmBookingExtractor(llm: LlmClient): BookingExtractor {
             .join(", ")}.`
         : "\n\nThis email has no attachments.";
 
-    return callStructuredWithTools(llm, {
-      system: prompts.extractBooking + attachmentNote,
-      prompt: `Subject: ${email.subject}\n\n${email.bodyText}`,
-      schema: bookingSchema,
-      tools: email.attachments.length > 0 ? [GET_ATTACHMENT_TEXT_TOOL] : [],
-      onToolCall: async (call) => {
-        if (call.name !== "get_attachment_text") {
-          return JSON.stringify({ error: `Unknown tool "${call.name}"` });
-        }
-        const filename = call.input["filename"];
-        if (typeof filename !== "string") {
-          return JSON.stringify({ error: "filename must be a string" });
-        }
+    const getAttachmentText = tool(
+      async ({ filename }: { filename: string }) => {
         const result = await fetchAttachment(filename);
-        if (!result.ok) {
-          return JSON.stringify({ error: `${result.error.type}: ${result.error.message}` });
-        }
-        return JSON.stringify({ text: result.value });
+        return result.ok ? { text: result.value } : { error: `${result.error.type}: ${result.error.message}` };
       },
+      {
+        name: "get_attachment_text",
+        description:
+          "Fetches the extracted text of an email attachment by exact filename. Only call this if the email " +
+          "body text alone is missing a required field (booking reference, a flight number, a segment date, or " +
+          "the passenger name) AND an attachment that could plausibly contain it is listed as available below. " +
+          "Don't call this speculatively if the body already has everything you need.",
+        schema: z.object({ filename: z.string().describe("Exact filename as listed") }),
+      },
+    );
+
+    const agent = createAgent({
+      model,
+      tools: email.attachments.length > 0 ? [getAttachmentText] : [],
+      systemPrompt: prompts.extractBooking + attachmentNote,
+      responseFormat: extractionSchema,
     });
+
+    const result = await agent.invoke({
+      messages: [new HumanMessage(`Subject: ${email.subject}\n\n${email.bodyText}`)],
+    });
+
+    return result.structuredResponse.booking;
   };
 }
