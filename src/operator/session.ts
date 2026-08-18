@@ -10,9 +10,31 @@ import { UserRepo } from "../db/repositories/user.repo.js";
 import { PendingConfirmationRepo } from "../db/repositories/pending-confirmation.repo.js";
 import { type ConsentGate, DbConsentGate, decideConsent, isAffirmativeReply } from "../compliance/consent.js";
 import { buildOperatorTools, OperatorTools, describeConfirmedActionResult, operatorThreadId } from "./tools.js";
+import { withThreadLock } from "./thread-lock.js";
 import { logger, type Logger } from "../lib/logger.js";
 import { createTracer, type Tracer } from "../agent/llm/tracing.adapter.js";
 import { env } from "../config/env.js";
+
+/**
+ * Anthropic's exact wording (and lc_error_code) when a thread's message
+ * history ends in a tool call with no matching tool result — the shape a
+ * corrupted thread produces on every subsequent call, forever, until
+ * repaired. Checked defensively at up to two levels of `cause` because
+ * LangChain wraps the provider's error (MiddlewareError -> BadRequestError),
+ * and matched by both the LangChain error code and the raw message text so
+ * this still catches it if that wrapping shape changes.
+ */
+function isDanglingToolUseError(error: unknown): boolean {
+  for (let level = 0, current = error; level < 3 && current; level += 1) {
+    const candidate = current as { lc_error_code?: unknown; message?: unknown; cause?: unknown };
+    if (candidate.lc_error_code === "INVALID_TOOL_RESULTS") return true;
+    if (typeof candidate.message === "string" && candidate.message.includes("tool_use ids were found without")) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
 
 /**
  * Bounds how much of a thread's history gets sent to the model per turn —
@@ -84,10 +106,34 @@ async function runAgentTurn(
     middleware: [historyMiddleware],
   });
 
-  const result = await agent.invoke(
+  const invokeArgs: [{ messages: HumanMessage[] }, { configurable: { thread_id: string } }] = [
     { messages: [new HumanMessage(params.prompt)] },
     { configurable: { thread_id: params.threadId } },
-  );
+  ];
+
+  // The lock makes concurrent turns on the same thread wait instead of
+  // racing (see thread-lock.ts's doc comment for why that race is real, not
+  // hypothetical). The retry below is a separate safety net for a thread
+  // that's already corrupted for some other reason — most plausibly a
+  // process that died mid-tool-call, before the ToolMessage matching an
+  // already-checkpointed tool call could be written — which the lock alone
+  // can't fix, since the corruption predates this turn entirely. Clearing
+  // the thread loses that thread's own memory, but a conversation that's
+  // merely forgotten its recent history is far better than one that's
+  // permanently wedged, rejecting every future turn with the same error.
+  const result = await withThreadLock(params.threadId, async () => {
+    try {
+      return await agent.invoke(...invokeArgs);
+    } catch (cause) {
+      if (!isDanglingToolUseError(cause)) throw cause;
+      params.log.error("thread had an unresolved tool call from a prior turn — clearing and retrying once", {
+        threadId: params.threadId,
+        cause: String(cause),
+      });
+      await getCheckpointer().deleteThread(params.threadId);
+      return await agent.invoke(...invokeArgs);
+    }
+  });
 
   const messages = result.messages as BaseMessage[];
   let lastHumanIndex = -1;
