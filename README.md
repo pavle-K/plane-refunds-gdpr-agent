@@ -26,7 +26,9 @@ Most eligible passengers never claim the compensation they're owed because the p
 
 ## How it works
 
-The core of the app is a [LangGraph.js](https://langchain-ai.github.io/langgraphjs/) state graph — a pipeline of nodes with conditional branches and one deliberate loop, checkpointed to Postgres so it can pause for days (waiting on an airline reply) and resume safely across process restarts.
+The claim pipeline is a [LangGraph.js](https://langchain-ai.github.io/langgraphjs/) state graph (`src/agent/graph.ts`) — a sequence of nodes with conditional branches and one deliberate loop, checkpointed to Postgres so it can pause for days (waiting on an airline reply) and resume safely across process restarts.
+
+The conversational layer you talk to (`npm run chat`, Telegram) is a separate [LangChain](https://docs.langchain.com/oss/javascript/langchain/overview) `createAgent` (`src/operator/session.ts`), sharing the same Postgres checkpointer. It calls the claim pipeline as one of its tools, alongside 13 others (connecting email, saving passenger details, and so on) — it doesn't duplicate the pipeline's logic. See [Ways to interact with it](#ways-to-interact-with-it) below.
 
 ```
 ingest → checkEligibility ─(ineligible)──────────────────────────────► END
@@ -37,15 +39,15 @@ ingest → checkEligibility ─(ineligible)────────────�
                                         ▼
                                    sendClaim → awaitResponse
                                                    │
-                              ┌────────────────────┼────────────────────┐
-                        (timeout)              (reply: needs_info)  (reply: rejected)
-                              ▼                     ▼                    │
-                          escalate ──► END     awaitResponse    ┌────────┴────────┐
-                                                             (evidence)      (no evidence)
-                                                                ▼                 ▼
-                                                              rebut          escalate ──► END
-                                                                │
-                                                                └──► draftClaim (loop back)
+                        ┌─────────────────┬────────┴────────┬────────────────────┐
+                  (timeout)      (reply: needs_info)  (reply: ambiguous)   (reply: rejected)
+                        ▼                 ▼                  ▼                    │
+                    escalate ──► END  awaitResponse       escalate ──► END ┌───────┴────────┐
+                                                                       (evidence)      (no evidence)
+                                                                            ▼                 ▼
+                                                                          rebut          escalate ──► END
+                                                                            │
+                                                                            └──► draftClaim (loop back)
 
                                           (reply: accepted)
                                                 ▼
@@ -60,7 +62,7 @@ ingest → checkEligibility ─(ineligible)────────────�
 - **`sendClaim` → `awaitResponse`** — dispatches the email, then waits — genuinely, for days or weeks if needed, durable across restarts because of the Postgres checkpointer.
 - **`classifyResponse`** — an LLM categorizes the airline's reply: accepted / rejected / needs-info / ambiguous.
 - **`rebut`** — loops back to `draftClaim` with counter-evidence if rejected and the evidence supports pushing back. Bounded (`MAX_REBUTTAL_ATTEMPTS`) so it can't cycle forever.
-- **`escalate`** — flags for manual/legal follow-up if a rebuttal fails or nothing happens in time.
+- **`escalate`** — flags for manual/legal follow-up if the reply is ambiguous, a rebuttal fails, or nothing happens in time.
 - **`processPayout`** — triggers the commission split once the airline actually pays.
 
 **The rule that makes this maintainable:** the LLM never computes money or law. Distance bands, delay thresholds, and compensation amounts are pure arithmetic in `src/domain/ec261/`, computed before the LLM is ever called and passed in as fixed values. The LLM is used only for extraction (email → structured data), drafting (structured data → prose), and classification (reply → category) — never for anything a hallucination could turn into a legal or financial error.
@@ -71,7 +73,7 @@ ingest → checkEligibility ─(ineligible)────────────�
 2. **Messaging channels** (`npm run server`) — the same conversation, reachable from Telegram (and, as they're added, Discord/WhatsApp/Viber/Facebook/email) instead of a terminal. See [Connecting messaging channels](#connecting-messaging-channels).
 3. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the graph or providers directly with flags, useful for scripted testing without the LLM in the loop for orchestration.
 
-Both (1) and (2) are front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one tool-use loop, one persisted history per user identity, many ways in.
+Both (1) and (2) are front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one `createAgent` agent, one identity per user, many ways in.
 
 ---
 
@@ -80,7 +82,8 @@ Both (1) and (2) are front doors onto the same underlying conversation logic (`s
 | Layer | Choice |
 |---|---|
 | Language | TypeScript (strict mode) |
-| Agent orchestration | LangGraph.js, with a Postgres checkpointer |
+| Claim pipeline | LangGraph.js `StateGraph`, with a Postgres checkpointer |
+| Conversational agent | LangChain `createAgent`, on the same Postgres checkpointer |
 | Backend runtime | Node.js ≥ 20 |
 | Database | Postgres (Drizzle ORM + migrations) |
 | LLM | Multi-provider — Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint (hosted or self-hosted) — see below |
@@ -167,17 +170,17 @@ Only `DATABASE_URL` is unconditionally required. Every provider (flight data, we
 
 ## Choosing an LLM provider
 
-The LLM client lives behind a single interface (`src/agent/llm/llm.port.ts`) with adapters for each provider in `src/agent/llm/providers/`. Switching providers is two lines in `.env` — no code changes:
+Model selection is a single factory function (`src/agent/llm/chat-model.ts`) that returns a LangChain chat model. Switching providers is two lines in `.env` — no code changes:
 
 ```bash
 LLM_PROVIDER=anthropic     # anthropic | openai | google | xai | openai-compatible
 LLM_MODEL=                 # optional — overrides the provider's default model id
 ```
 
-Only three adapters exist because most providers speak the same wire protocol:
+Three LangChain model classes cover every provider, because most of them speak the same wire protocol:
 
-- **`anthropic.adapter.ts`** and **`google.adapter.ts`** — native API integrations for Anthropic and Gemini.
-- **`openai-compatible.adapter.ts`** — a single adapter, parameterized by base URL, that covers OpenAI, xAI, and *any* other endpoint implementing OpenAI's Chat Completions format: hosted (OpenRouter, Groq, Together, DeepSeek's own API, ...) or self-hosted (Ollama, vLLM, LM Studio). This is also how every open-weight model plugs in — no per-model code needed.
+- **`ChatAnthropic`** and **`ChatGoogleGenerativeAI`** — native integrations for Anthropic and Gemini.
+- **`ChatOpenAI`**, parameterized by base URL — covers OpenAI, xAI, and *any* other endpoint implementing OpenAI's Chat Completions format: hosted (OpenRouter, Groq, Together, DeepSeek's own API, ...) or self-hosted (Ollama, vLLM, LM Studio). This is also how every open-weight model plugs in — no per-model code needed.
 
 ### Running a free, open-weight model locally
 
@@ -205,7 +208,7 @@ OPENAI_COMPATIBLE_API_KEY=      # unused by Ollama, leave blank
 
 ## Connecting messaging channels
 
-`npm run chat` and every messaging channel are the same conversation underneath — `src/operator/session.ts` is the one place that builds the system prompt, runs the tool-use loop, and persists history (in the `channel_identities`/`conversation_messages` tables, keyed by `(channel, externalId)` — a Telegram chat id, a Discord user id, an email address, whatever a given platform uses as its identity). A channel adapter's only job is translating its platform's payload into `{externalUserId, text}` and sending the reply string back out — see `src/channels/channel.port.ts`.
+`npm run chat` and every messaging channel are the same conversation underneath — `src/operator/session.ts` is the one place that builds the system prompt and runs the agent, keyed by `(channel, externalId)` — a Telegram chat id, a Discord user id, an email address, whatever a given platform uses as its identity. The agent's own conversation memory lives in its LangGraph checkpointer thread, one per identity; `channel_identities`/`conversation_messages` (Postgres) separately hold the identity record and a full compliance/audit transcript of every turn, including ones the agent never runs on (e.g. blocked by the consent gate). A channel adapter's only job is translating its platform's payload into `{externalUserId, text}` and sending the reply string back out — see `src/channels/channel.port.ts`.
 
 **Telegram** is the only channel wired up so far (Discord, WhatsApp, Viber, and Facebook follow the same `src/channels/<platform>/` shape once added — `channel.port.ts` and `src/operator/session.ts` don't change).
 
@@ -295,7 +298,7 @@ npm run typecheck
 npm run lint
 ```
 
-Two hard rules the test suite follows throughout: **no test hits a live API or sends a real email** (every provider has a fake adapter, used everywhere), and **no test makes a real LLM call** (`FakeLlmClient` is used instead — deterministic, queue-based canned responses).
+Two hard rules the test suite follows throughout: **no test hits a live API or sends a real email** (every provider has a fake adapter, used everywhere), and **no test makes a real LLM call** (`FakeChatModel` is used instead — a deterministic, queue-based LangChain chat model).
 
 The highest-value tests are in `tests/unit/domain/` — pure functions covering EC261 eligibility, compensation bands (with exact boundary values, since an off-by-one here is a real money bug), and the claim state machine. `tests/unit/agent/nodes/human-approval.node.test.ts` is arguably the most important single test in the project: it asserts the graph genuinely interrupts and that nothing is sent before an explicit human decision comes back.
 
@@ -377,6 +380,7 @@ Following the staged plan in `CLAUDE.md`:
 - ✅ **Stage 1** — domain core (`src/domain/`) and all data providers, each with a fake adapter and unit tests.
 - ✅ **Stage 2** — the full graph, prompts, the human-approval gate, audit logging, and (beyond the original plan) the conversational chat operator, multi-provider LLM support, and a messaging-channel layer (Telegram wired up; Discord/WhatsApp/Viber/Facebook/email follow the same adapter shape).
 - ✅ **Multi-tenant hosted OAuth** (beyond the original plan, driven by real remote users needing to connect their own inbox over a messaging channel — see [How a remote user connects their own inbox](#how-a-remote-user-connects-their-own-inbox)): a `users` identity model separate from `channel_identities`, per-user `email_connections` (with real-OAuth-verified reassignment on reconnect), a non-blocking hosted OAuth flow with PKCE, per-user authorization on every claim-touching tool (`src/operator/tools.ts`), first-contact consent capture, and statelessness for horizontal scale (no in-process caches — every entry point can be handled by any instance).
+- ✅ **LangChain convergence** (beyond the original plan): the conversational operator, originally a hand-written multi-provider tool-calling loop with no LangChain/LangGraph involvement, was rewritten onto LangChain's `createAgent`, sharing the claim pipeline's Postgres checkpointer. The claim-pipeline nodes (`scoreClaim`, `draftClaim`, `classifyResponse`) and the email booking extractor now use LangChain's native structured-output support instead of a hand-rolled prompt-and-parse mechanism. One LLM abstraction across the codebase instead of two. Rate-limit error translation (mapping a real provider 429 to a user-facing message) is not yet wired up for the new model layer — a known gap, not an oversight.
 - ⬜ **Stage 3** — not started: integration tests across the whole graph, checkpoint/resume durability tests, and most of the compliance layer. `src/compliance/` has append-only audit logging and first-contact consent capture (the consent notice text is a **placeholder**, not reviewed legal copy — see [Legal & compliance disclaimer](#legal--compliance-disclaimer)), but **no retention/purge job, redaction, or DSAR (Article 15/17) export/delete endpoints yet**. A WhatsApp phone number or Telegram chat id is PII the moment it's stored, and none of it — nor any other user data — is covered by DSAR export/delete or retention yet. Claim state itself still lives only in the LangGraph checkpointer; `claims` (added for ownership/authorization) is a thin id+status mirror, not the full claim record.
 
 ---
