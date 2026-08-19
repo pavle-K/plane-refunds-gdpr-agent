@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createAgent, contextEditingMiddleware, ClearToolUsesEdit } from "langchain";
-import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { getCheckpointer } from "../agent/checkpointer.js";
 import { ConversationRepo } from "../db/repositories/conversation.repo.js";
@@ -92,7 +92,7 @@ async function runAgentTurn(
     tools: OperatorTools;
     log: Logger;
     tracer: Tracer;
-    onToolCall?: (call: { name: string; input: Record<string, unknown> }) => void;
+    onToolCall?: (call: { name: string; input: Record<string, unknown>; result: unknown }) => void;
   },
 ): Promise<{ responseText: string; toolCallCount: number }> {
   const startedAt = Date.now();
@@ -150,7 +150,29 @@ async function runAgentTurn(
     if (AIMessage.isInstance(message) && message.tool_calls && message.tool_calls.length > 0) {
       for (const call of message.tool_calls) {
         toolCallCount += 1;
-        params.onToolCall?.({ name: call.name, input: call.args });
+        if (!params.onToolCall) {
+          continue;
+        }
+        // The matching ToolMessage carries this call's real result — a JSON
+        // string, since buildOperatorTools' wrapped tool always returns
+        // JSON.stringify(...) (including on a caught dispatch error, as
+        // {error: ...}). Falls back to the raw string (or undefined, if the
+        // result genuinely never arrived) rather than throwing on malformed
+        // content — a caller like the web chat route treats a missing/
+        // unparseable result the same as "no actionable result", not a crash.
+        const toolMessage = turnMessages.find(
+          (candidate): candidate is ToolMessage =>
+            ToolMessage.isInstance(candidate) && candidate.tool_call_id === call.id,
+        );
+        let result: unknown;
+        if (toolMessage && typeof toolMessage.content === "string") {
+          try {
+            result = JSON.parse(toolMessage.content);
+          } catch {
+            result = toolMessage.content;
+          }
+        }
+        params.onToolCall({ name: call.name, input: call.args, result });
       }
     }
   }
@@ -173,8 +195,10 @@ export interface IncomingTurn {
   externalId: string;
   text: string;
   /** Optional visibility hook for callers that want to surface tool activity
-   * (e.g. the CLI printing "[start_claim(...)]" as it happens). No-op if omitted. */
-  onToolCall?: (call: { name: string; input: Record<string, unknown> }) => void;
+   * (e.g. the CLI printing "[start_claim(...)]" as it happens, or the web
+   * chat route turning a connect_email result into an { type: "oauth_popup" }
+   * action — see src/operator/web-actions.ts). No-op if omitted. */
+  onToolCall?: (call: { name: string; input: Record<string, unknown>; result: unknown }) => void;
 }
 
 /**
@@ -365,7 +389,13 @@ export async function resumeConversationAfterEmailConnected(
     tracer,
   });
 
-  await repo.appendTurn(params.channelIdentityId, "user", note);
+  // "system", not "user" — the LangGraph checkpointer thread above is what
+  // actually needs this as a human-role message for the agent to act on
+  // (params.prompt, via runAgentTurn); this separate audit-transcript write
+  // is a different store (see ConversationTurn's doc comment) and should
+  // record what really happened — the backend injected this, the user never
+  // typed it.
+  await repo.appendTurn(params.channelIdentityId, "system", note);
   await repo.appendTurn(params.channelIdentityId, "assistant", responseText);
 
   log.info("turn completed", { durationMs: Date.now() - startedAt, toolCalls: toolCallCount });

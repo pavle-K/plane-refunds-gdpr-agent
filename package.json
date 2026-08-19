@@ -29,7 +29,9 @@
     "chat": "tsx scripts/chat.ts",
     "server": "tsx src/api/server.ts",
     "telegram:setup": "tsx scripts/telegram-setup.ts",
-    "dev:telegram": "tsx scripts/dev-telegram.ts"
+    "dev:telegram": "tsx scripts/dev-telegram.ts",
+    "dev:web": "tsx scripts/dev-web.ts",
+    "build:web": "npm run build --prefix web"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -39,6 +41,7 @@
     "@langchain/langgraph": "^1.4.9",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "@langchain/openai": "^1.5.8",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
@@ -52,6 +55,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
     "@types/nodemailer": "^8.0.1",

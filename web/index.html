@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EC261 Claim Assistant</title>
+    <script>
+      // Applied synchronously, before first paint, so switching pages/reloading
+      // never flashes the wrong theme — see src/lib/theme.ts for the same logic
+      // used everywhere else theme preference is read/written.
+      (function () {
+        try {
+          var pref = localStorage.getItem("prg_theme");
+          if (pref === "light" || pref === "dark") {
+            document.documentElement.setAttribute("data-theme", pref);
+          }
+        } catch (e) {
+          /* localStorage unavailable (e.g. private browsing) — fall back to system. */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

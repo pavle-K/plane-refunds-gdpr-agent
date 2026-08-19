@@ -8,16 +8,30 @@
  *
  * Usage: npm run server
  */
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
+import cookieParser from "cookie-parser";
 import { setupCheckpointer, getCheckpointer } from "../agent/checkpointer.js";
 import { createChatModel } from "../agent/llm/chat-model.js";
 import { FakeChatModel } from "../agent/llm/fake-chat-model.js";
 import { flushTracing } from "../agent/llm/index.js";
 import { createTelegramWebhookRouter } from "./routes/channels/telegram.routes.js";
 import { createOAuthCallbackRouter } from "./routes/oauth.routes.js";
+import { createWebApiRouter } from "./routes/web/index.js";
+import { createWebSessionMiddleware } from "./middleware/web-session.js";
 import { createPublicEndpointRateLimiter } from "./middleware/rate-limit.js";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+
+/** The built SPA (`cd web && npm run build`) — served same-origin, same
+ * process/port as the API, so production needs no CORS config and no second
+ * public URL to register anywhere (Google's OAuth allowlist included; see
+ * PUBLIC_URL's doc comment). Resolved relative to this file rather than
+ * process.cwd() so it's correct regardless of where `node`/`tsx` is invoked
+ * from. */
+const WEB_DIST_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 
 async function main() {
   const model = createChatModel();
@@ -41,10 +55,31 @@ async function main() {
   // header at all — exactly what a reverse proxy always adds.
   app.set("trust proxy", 1);
   app.use(express.json());
+  app.use(cookieParser());
 
   app.get("/healthz", (_req, res) => res.sendStatus(200));
   app.use(createPublicEndpointRateLimiter(), createTelegramWebhookRouter(model));
   app.use(createPublicEndpointRateLimiter(), createOAuthCallbackRouter(model));
+  app.use(createWebSessionMiddleware(), createPublicEndpointRateLimiter(), createWebApiRouter(model));
+
+  // Same-origin static serving of the built SPA — see WEB_DIST_DIR's doc
+  // comment. Only attempted if a build actually exists: `npm run dev:web`
+  // runs the SPA through Vite's own dev server instead (see that script's
+  // doc comment), so a dev environment with no `web/dist` yet is expected,
+  // not an error.
+  const webIndexHtml = join(WEB_DIST_DIR, "index.html");
+  if (existsSync(webIndexHtml)) {
+    app.use(express.static(WEB_DIST_DIR));
+    // SPA client-side routing fallback — any GET that didn't match a static
+    // file or an API route above resolves to index.html, so e.g. a hard
+    // reload on /claims/abc123 works. Placed last, so it never shadows any
+    // route mounted above it.
+    app.get(/.*/, (_req, res) => res.sendFile(webIndexHtml));
+  } else {
+    logger.warn("web/dist/index.html not found — the API is up but no frontend build is being served", {
+      hint: "run `cd web && npm run build`, or use `npm run dev:web` for local development",
+    });
+  }
 
   const server = app.listen(env.PORT, () => {
     logger.info("API listening", { port: env.PORT, llmProvider: env.LLM_PROVIDER, logLevel: env.LOG_LEVEL });

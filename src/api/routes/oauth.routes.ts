@@ -7,6 +7,7 @@ import { ConversationRepo } from "../../db/repositories/conversation.repo.js";
 import { UserRepo } from "../../db/repositories/user.repo.js";
 import { resumeConversationAfterEmailConnected } from "../../operator/session.js";
 import { logger } from "../../lib/logger.js";
+import { env } from "../../config/env.js";
 
 /**
  * The public landing page a user's browser hits after they finish Google's or
@@ -27,15 +28,46 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function renderPage(title: string, message: string): string {
+function renderPage(title: string, message: string, script?: string): string {
   return `<!doctype html>
 <html>
 <head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; text-align: center; color: #222;">
 <h1>${escapeHtml(title)}</h1>
 <p>${escapeHtml(message)}</p>
+${script ? `<script>${script}</script>` : ""}
 </body>
 </html>`;
+}
+
+/**
+ * When this callback was reached from the web frontend's OAuth popup
+ * (openOauthPopup.ts opens this exact route in a new window rather than
+ * navigating the SPA itself), the popup has no other way to learn the flow
+ * finished — it isn't polling anything, and this page is the only thing that
+ * runs in its context. This script tells the opener via postMessage and
+ * closes the popup, so the SPA's listener (window.addEventListener("message",
+ * ...)) can refresh the connection state immediately instead of the user
+ * having to notice the popup sitting there and close it themselves.
+ *
+ * targetOrigin is WEB_APP_ORIGIN (or PUBLIC_URL, in the default same-origin
+ * topology) rather than "*" — postMessage with a wildcard target would hand
+ * this payload (an email address) to whatever page the opener has since
+ * navigated to, if it's since navigated cross-origin. window.opener is
+ * checked because this page also renders for the CLI/Telegram-initiated
+ * flow, which was never opened as a popup and has no opener to message.
+ * `</script` inside emailAddress can't actually occur (it's provider-issued
+ * and regex-validated well before this point), but the string is still
+ * escaped defensively rather than trusting that upstream invariant here too.
+ */
+export function buildEmailConnectedPostMessageScript(
+  targetOrigin: string,
+  payload: { provider: "gmail" | "outlook"; emailAddress: string },
+): string {
+  const json = JSON.stringify({ type: "email_connected", ...payload }).replace(/</g, "\\u003c");
+  return (
+    `if (window.opener) { window.opener.postMessage(${json}, ${JSON.stringify(targetOrigin)}); window.close(); }`
+  );
 }
 
 const TRY_AGAIN_MESSAGE = "This link is no longer valid — please ask the bot to send you a new connection link.";
@@ -156,10 +188,21 @@ export function createOAuthCallbackRouter(
       return;
     }
 
+    const targetOrigin = env.WEB_APP_ORIGIN ?? env.PUBLIC_URL;
+    const popupScript = targetOrigin
+      ? buildEmailConnectedPostMessageScript(targetOrigin, { provider, emailAddress: result.value.emailAddress })
+      : undefined;
+
     res
       .status(200)
       .type("html")
-      .send(renderPage("Connected", `${result.value.emailAddress} is now connected — you can return to your chat.`));
+      .send(
+        renderPage(
+          "Connected",
+          `${result.value.emailAddress} is now connected — you can return to your chat.`,
+          popupScript,
+        ),
+      );
 
     await sendConnectedNotification(model, result.value.channelIdentityId, result.value.emailAddress, getChannelAdapter);
   });

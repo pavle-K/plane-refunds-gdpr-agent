@@ -75,7 +75,7 @@ export const channelIdentities = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id),
-    channel: text("channel").notNull(), // "cli" | "telegram" | "discord" | "whatsapp" | "viber" | "facebook" | "email"
+    channel: text("channel").notNull(), // "cli" | "telegram" | "discord" | "whatsapp" | "viber" | "facebook" | "email" | "web"
     externalId: text("external_id").notNull(),
     createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
     // Set once, the first time the consent notice is shown to this identity —
@@ -203,7 +203,7 @@ export const conversationMessages = pgTable("conversation_messages", {
   channelIdentityId: uuid("channel_identity_id")
     .notNull()
     .references(() => channelIdentities.id),
-  role: text("role").notNull(), // "user" | "assistant"
+  role: text("role").notNull(), // "user" | "assistant" | "system" (backend-injected, not user-authored — see ConversationTurn)
   content: text("content").notNull(),
   createdAtUtc: timestamp("created_at_utc", { withTimezone: true }).notNull().defaultNow(),
 });

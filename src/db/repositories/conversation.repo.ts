@@ -7,9 +7,17 @@ import { UserRepo } from "./user.repo.js";
  * including ones the operator agent never even ran on (consent-gated,
  * pending-confirmation-gated). NOT what the operator agent itself sees for
  * conversation continuity — that's the LangGraph checkpointer thread now
- * (src/operator/session.ts), populated automatically by createAgent. */
+ * (src/operator/session.ts), populated automatically by createAgent.
+ *
+ * "system" is for a turn the backend injected into the agent's context on
+ * the user's behalf (see session.ts's resumeConversationAfterEmailConnected)
+ * — never something the user actually typed. Distinct from "user" so a
+ * consumer of this transcript (the web frontend's chat history, currently
+ * the only reader — see api/routes/web/chat.routes.ts) can tell the two
+ * apart instead of rendering a system-authored note as if the user had sent
+ * it themselves. */
 export interface ConversationTurn {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
 }
 

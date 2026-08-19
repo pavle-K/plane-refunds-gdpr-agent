@@ -127,6 +127,15 @@ const envSchema = z.object({
   // Optional at the schema level (see DATABASE_URL's comment for why); actually
   // required to start a hosted OAuth flow, checked lazily at that point of use.
   PUBLIC_URL: z.string().url().optional(),
+
+  // The web SPA's own origin — used by src/api/middleware/web-session.ts's
+  // production CSRF Origin check and by the OAuth popup's postMessage target
+  // origin (src/api/routes/oauth.routes.ts). Only needed when the SPA is
+  // hosted on a DIFFERENT origin than this API; in the default same-origin
+  // production topology (Express serves web/dist itself, see server.ts) this
+  // is just PUBLIC_URL, so it's optional and falls back to it everywhere it's
+  // read rather than needing to be set twice.
+  WEB_APP_ORIGIN: z.string().url().optional(),
 });
 
 /** Vars that are optional at the schema level (so unit tests and early-stage

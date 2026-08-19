@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Command } from "@langchain/langgraph";
 import { tool } from "langchain";
 import type { StructuredTool } from "@langchain/core/tools";
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { z } from "zod";
 import type { Logger } from "../lib/logger.js";
 import type { Tracer } from "../agent/llm/tracing.adapter.js";
@@ -337,6 +338,40 @@ export class OperatorTools {
 
   private config(threadId: string) {
     return { configurable: { thread_id: threadId } };
+  }
+
+  /**
+   * Every call to this.graph.invoke()/getState() must go through this —
+   * never call them directly. When OperatorTools is dispatched from a real
+   * conversation turn (session.ts's runAgentTurn calling this as a tool
+   * inside LangChain's createAgent), that call happens INSIDE the outer
+   * conversational agent's own LangGraph execution. LangGraph tracks the
+   * "current" graph invocation via an ambient AsyncLocalStorage-scoped
+   * config, and without this wrapper it treats this.graph as a SUBGRAPH of
+   * that outer run: its checkpoints get namespaced under the outer tool
+   * call's own id (checkpoint_ns like "tools:<runId>") instead of this
+   * graph's own root namespace, and interrupt() escapes as an uncaught
+   * GraphInterrupt instead of pausing the graph normally — both because the
+   * inner Pregel loop is no longer running as its own top-level invocation.
+   *
+   * this.graph must always behave as its own independent, durably resumable
+   * graph, keyed only by its own thread_id — every OTHER caller (a direct
+   * dispatch() call, scripts/start-claim.ts, a LATER turn's
+   * get_claim_status/submit_approval_decision) invokes it with no such
+   * ambient context and gets the correct, root-namespaced behavior. A claim
+   * started without this wrapper becomes permanently unreadable by every one
+   * of those other callers the moment it's created — this was a real
+   * incident (see the fix's own git history), not a hypothetical.
+   *
+   * Clearing the ambient store for the callback's full async extent (not
+   * just its synchronous prefix) is exactly what AsyncLocalStorage.run() is
+   * for — every async continuation this.graph.invoke()/getState() itself
+   * creates snapshots "no store" as its own context and correctly restores
+   * that when it later runs, regardless of what the ambient context outside
+   * this wrapper is doing concurrently.
+   */
+  private runGraphCall<T>(fn: () => Promise<T>): Promise<T> {
+    return AsyncLocalStorageProviderSingleton.getInstance().run(undefined, fn);
   }
 
   /** Keeps the claims ownership+status mirror (schema.ts's `claims` table)
@@ -779,7 +814,7 @@ export class OperatorTools {
     // not the model's memory, decides what "the ryanair one" actually is.
     const existing = await this.claimRepo.findByBookingReference(this.userId, bookingReference);
     if (existing) {
-      const state = await this.graph.getState(this.config(existing.id));
+      const state = await this.runGraphCall(() => this.graph.getState(this.config(existing.id)));
       return {
         threadId: existing.id,
         flightNumbers: input.segments.map((s) => s.flightNumber),
@@ -835,9 +870,8 @@ export class OperatorTools {
       })),
     };
 
-    const result = (await this.graph.invoke(
-      { claimId: threadId, claimStatus: "draft", booking, claimant },
-      this.config(threadId),
+    const result = (await this.runGraphCall(() =>
+      this.graph.invoke({ claimId: threadId, claimStatus: "draft", booking, claimant }, this.config(threadId)),
     )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(threadId, result);
 
@@ -869,9 +903,8 @@ export class OperatorTools {
         ? { action: "edit" as const, editedText: input.editedText! }
         : { action: input.action };
 
-    const result = (await this.graph.invoke(
-      new Command({ resume: decision }),
-      this.config(threadId),
+    const result = (await this.runGraphCall(() =>
+      this.graph.invoke(new Command({ resume: decision }), this.config(threadId)),
     )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(threadId, result);
 
@@ -880,7 +913,7 @@ export class OperatorTools {
 
   private async getClaimStatus(threadId?: string) {
     const id = await this.resolveThreadId(threadId);
-    const state = await this.graph.getState(this.config(id));
+    const state = await this.runGraphCall(() => this.graph.getState(this.config(id)));
     return {
       threadId: id,
       claimStatus: state.values.claimStatus,
@@ -897,6 +930,12 @@ export class OperatorTools {
       submission: state.values.submission,
       escalationReason: state.values.escalationReason,
       payout: state.values.payout,
+      // Not consumed by the LLM prompt (the model already extracted this once,
+      // at start_claim time) — carried so a caller that renders claim state
+      // outside the chat (the web frontend's claim-detail view) can show which
+      // flight/passenger facts are actually on record, instead of re-deriving
+      // them from chat scrollback.
+      booking: state.values.booking,
     };
   }
 
@@ -911,7 +950,7 @@ export class OperatorTools {
    */
   private async sendPostalPack(threadId?: string) {
     const id = await this.resolveThreadId(threadId);
-    const state = await this.graph.getState(this.config(id));
+    const state = await this.runGraphCall(() => this.graph.getState(this.config(id)));
     const values = state.values as GraphStateType;
 
     const plan = values.submission;
@@ -1030,10 +1069,9 @@ export class OperatorTools {
     const id = await this.resolveThreadId(threadId);
 
     const resumeValue = replyText ? { type: "reply" as const, airlineReplyText: replyText } : { type: "timeout" as const };
-    const result = (await this.graph.invoke(new Command({ resume: resumeValue }), this.config(id))) as Record<
-      string,
-      unknown
-    >;
+    const result = (await this.runGraphCall(() =>
+      this.graph.invoke(new Command({ resume: resumeValue }), this.config(id)),
+    )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(id, result);
     return { threadId: id, ...this.summarize(result) };
   }
@@ -1041,9 +1079,11 @@ export class OperatorTools {
   private async submitPaymentConfirmation(input: PaymentInput) {
     const threadId = await this.resolveThreadId(input.threadId);
 
-    const result = (await this.graph.invoke(
-      new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),
-      this.config(threadId),
+    const result = (await this.runGraphCall(() =>
+      this.graph.invoke(
+        new Command({ resume: { receivedAmountCents: input.receivedAmountCents, connectedAccountId: input.connectedAccountId } }),
+        this.config(threadId),
+      ),
     )) as Record<string, unknown>;
     await this.updateClaimStatusMirror(threadId, result);
     return { threadId, ...this.summarize(result) };
@@ -1064,6 +1104,8 @@ export class OperatorTools {
       awaitingInput: Boolean(result["__interrupt__"]),
       escalationReason: result["escalationReason"],
       payout: result["payout"],
+      // See getClaimStatus's identical field for why this is carried.
+      booking: result["booking"],
     };
   }
 }

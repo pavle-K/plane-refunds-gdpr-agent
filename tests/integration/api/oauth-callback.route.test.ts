@@ -119,6 +119,12 @@ describe.skipIf(!canRun)("GET /oauth/:provider/callback (real Postgres, ephemera
     const body = await res.text();
     expect(body).toContain(emailAddress);
     expect(body).toContain("Connected");
+    // env.PUBLIC_URL is guaranteed set for this whole describe block (see
+    // `canRun` above), so the web-popup postMessage script should always be
+    // present on a successful connection — see buildEmailConnectedPostMessageScript.
+    expect(body).toContain("window.opener.postMessage(");
+    expect(body).toContain('"type":"email_connected"');
+    expect(body).toContain(emailAddress);
   });
 
   it("pushes the LLM-resumed confirmation to the originating chat and appends it to conversation history", async () => {

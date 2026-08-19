@@ -16,6 +16,7 @@ Most eligible passengers never claim the compensation they're owed because the p
 - [Getting started](#getting-started)
 - [Choosing an LLM provider](#choosing-an-llm-provider)
 - [Connecting messaging channels](#connecting-messaging-channels)
+- [Connecting the web frontend](#connecting-the-web-frontend)
 - [Connecting an email account](#connecting-an-email-account)
 - [Running it](#running-it)
 - [Testing](#testing)
@@ -72,9 +73,10 @@ ingest → checkEligibility ─(ineligible)────────────�
 
 1. **`npm run chat`** — a conversational operator running in your terminal. You talk to it in plain language ("check my inbox for bookings in March", "looks good, send it"); it calls tools that drive the graph above. See [`src/operator/`](src/operator/).
 2. **Telegram** (`npm run server`) — the same conversation, reachable from a Telegram bot instead of a terminal. Telegram is the only messaging channel actually wired up right now — the adapter shape supports adding others (Discord, WhatsApp, ...) later, but none exist yet. See [Connecting messaging channels](#connecting-messaging-channels).
-3. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the claim-pipeline graph or a provider directly with flags, bypassing the conversational layer entirely. Useful for testing the pipeline itself without an LLM in the loop.
+3. **The web frontend** (`npm run dev:web`) — the same conversation again, in a browser, alongside a claim-status view (eligibility, process steps, money owed, airline contact info, what data is still missing) and settings (theme, editing your saved details, deleting all your data). See [Connecting the web frontend](#connecting-the-web-frontend).
+4. **The CLI scripts** (`npm run claim:start`, `claim:resume`, `email:check`) — drive the claim-pipeline graph or a provider directly with flags, bypassing the conversational layer entirely. Useful for testing the pipeline itself without an LLM in the loop.
 
-(1) and (2) are two front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one `createAgent` agent, one identity per user, many ways in.
+(1), (2), and (3) are three front doors onto the same underlying conversation logic (`src/operator/session.ts`) — one `createAgent` agent, one identity per user, many ways in.
 
 Connecting an email account requires `npm run server` to be running, even when using `npm run chat`. The `connect_email` tool initiates an OAuth flow, and the redirect target is served by the API server, not the chat process. See [Connecting an email account](#connecting-an-email-account).
 
@@ -85,6 +87,7 @@ Connecting an email account requires `npm run server` to be running, even when u
 | Layer | Choice |
 |---|---|
 | Language | TypeScript (strict mode) |
+| Web frontend | React + Vite + TanStack Query (`web/`), served same-origin by the API in production — see [Connecting the web frontend](#connecting-the-web-frontend) |
 | Claim pipeline | LangGraph.js `StateGraph`, with a Postgres checkpointer |
 | Conversational agent | LangChain `createAgent`, on the same Postgres checkpointer |
 | Backend runtime | Node.js ≥ 20 |
@@ -123,13 +126,21 @@ src/
   channels/        # messaging-platform adapters, same ports/adapters shape as providers/
     telegram/      #   webhook parsing + Bot API sendMessage; fake.adapter.ts covers the rest for now
   api/
-    server.ts      # hosts inbound channel webhooks
-    routes/channels/  # one route file per platform
+    server.ts      # hosts inbound channel webhooks + the web frontend's API (+ its
+                   #   static build, in production — see Connecting the web frontend)
+    routes/channels/  # one route file per messaging platform
+    routes/web/    # thin routes for the web frontend — each one just calls
+                   #   OperatorTools.dispatch(), the same surface the chat/Telegram
+                   #   tool-use loop calls
+    middleware/web-session.ts  # the web frontend's cookie-based identity — see below
   compliance/      # audit logging (append-only) and first-contact consent capture;
                    #   retention/redaction/DSAR are planned, not built yet
   db/              # Drizzle schema, migrations, repositories
   config/          # env parsing (zod, fails fast at boot) and constants
-scripts/           # CLI entry points — chat, claim:start/resume, email:connect/check
+scripts/           # CLI entry points — chat, claim:start/resume, email:connect/check, dev:web
+web/               # the web frontend — React + Vite + TanStack Query, its own
+                   #   package.json/tsconfig; never imports backend source, talks to
+                   #   it only over /api/web/* and /oauth/* (see Connecting the web frontend)
 tests/
   unit/            # mirrors src/ file-for-file
   evals/           # prompt regression suite (npm run test:prompts) — calls a REAL LLM,
@@ -247,6 +258,29 @@ If `TELEGRAM_BOT_TOKEN` isn't set, `createTelegramAdapter()` falls back to `Fake
 
 ---
 
+## Connecting the web frontend
+
+```bash
+npm run dev:web
+```
+Starts the API (`npm run server`) and the frontend's Vite dev server together, waits for the backend's `/healthz` to come up, then prints the URL to open (usually `http://localhost:5173`). `Ctrl+C` stops both. In dev, Vite proxies `/api` and `/oauth` to the backend on `localhost:3000` (see `web/vite.config.ts`) — the browser only ever talks to one origin, so there's no CORS configuration anywhere in this setup, dev or production.
+
+**Identity.** The web frontend has no login screen — it identifies a browser the same way this project already identifies a Telegram chat: an opaque, random, httpOnly cookie (`prg_web_session`, `src/api/middleware/web-session.ts`) issued silently on first visit, used as the `externalId` half of `channel: "web"`. There is no username/password/email-verification anywhere in this system yet (not for Telegram either); whoever holds the cookie is trusted to be that user, same risk profile already accepted for a Telegram chat id. The practical consequence: clearing cookies or switching browsers starts a new, empty identity — there's no way to log back into an existing one from a second device. Don't route real client funds through this without deciding whether that's acceptable first.
+
+**Production.** The backend serves the frontend's own build directly, same origin, same port — there is no second public URL to stand up, and consequently **nothing new to add to Google Cloud's (or anyone else's) allowlist**: the only external redirect URIs this project needs are the Gmail/Outlook OAuth ones already covered under [Connecting an email account](#connecting-an-email-account), which don't change.
+
+```bash
+cd web && npm run build   # or: npm run build:web, from the repo root
+NODE_ENV=production npm run server
+```
+`src/api/server.ts` serves `web/dist` via `express.static` plus an SPA fallback for client-side routes (e.g. a hard reload on `/claims/abc123`), and logs a warning (not a crash) if `web/dist` doesn't exist yet — a backend-only deployment still works with no frontend build present.
+
+If the frontend were ever hosted on a genuinely different origin than the API (not the setup above), `WEB_APP_ORIGIN` gates the session cookie's CSRF Origin check and the OAuth popup's `postMessage` target origin — see that variable's comment in `src/config/env.ts`. Unset, it falls back to `PUBLIC_URL`, which is what makes the same-origin topology above work with zero extra configuration.
+
+**The OAuth "connect your inbox" popup** specifically still needs a real public `PUBLIC_URL` — Google's/Microsoft's redirect target can't be `localhost`. Use `npm run dev:telegram`'s ngrok tunnel (or a real deployment) to exercise that one flow for real; everything else in the web frontend works against pure `localhost`.
+
+---
+
 ## Connecting an email account
 
 The `connect_email` tool always uses a real OAuth flow. The redirect callback is served by the API server's OAuth route (`src/api/routes/oauth.routes.ts`), which only runs as part of `npm run server` — regardless of which front door initiated the connection:
@@ -287,6 +321,11 @@ Talk to it directly: "check my inbox for flights in February", "start a claim fo
 npm run server
 ```
 Same conversation, reachable from Telegram instead of a terminal — see [Connecting messaging channels](#connecting-messaging-channels).
+
+```bash
+npm run dev:web
+```
+Same conversation again, in a browser, alongside a claim-status view and settings — see [Connecting the web frontend](#connecting-the-web-frontend).
 
 ```bash
 npm run claim:start -- --flight BA123 --date 2024-06-15 --from LHR --to JFK --carrier BA --delay 220 --status delayed
@@ -398,12 +437,13 @@ here.
 - The claim-pipeline graph, prompts, the human-approval gate, and audit logging.
 - The conversational operator (LangChain `createAgent`, sharing the claim pipeline's Postgres checkpointer), multi-provider LLM support (Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint), and a Telegram messaging channel.
 - Multi-tenant identity and access: a `users` model separate from `channel_identities`, per-user `email_connections` with a non-blocking hosted OAuth flow (PKCE) and real-OAuth-verified reassignment on reconnect, per-user authorization on every claim-touching tool (`src/operator/tools.ts`), first-contact consent capture, and no in-process state — any instance can handle any request.
+- **A web frontend** (`web/`, `npm run dev:web`) — chat plus a claim-status view (eligibility, process steps, money owed, airline contact info, what data is captured vs. still missing) and settings (theme, editing saved details, deleting all data), served same-origin by the API in production. Identity is a device-bound cookie, not a real login — see [Connecting the web frontend](#connecting-the-web-frontend) for what that does and doesn't cover.
 
 ### Not built yet
 
 - **Compliance.** No retention/purge job, no log redaction, no DSAR (Article 15/17) export/delete endpoints. Audit logging and first-contact consent capture exist, but the consent notice text itself is a **placeholder**, not reviewed legal copy (see [Legal & compliance disclaimer](#legal--compliance-disclaimer)). A Telegram chat id or a future WhatsApp phone number is personal data the moment it's stored, and none of it is covered by retention or DSAR yet.
 - **Integration and durability testing.** No full-lifecycle tests across the whole graph, and no checkpoint/resume durability tests against real Postgres.
-- **A frontend.** Everything today is chat-driven (CLI or Telegram) or scripted through the CLI tools — there's no web UI for approvals, claim tracking, or DSAR requests.
+- **Real login for the web frontend.** No accounts, no cross-device access, no recovery if a cookie is lost — see [Connecting the web frontend](#connecting-the-web-frontend).
 - **Self-updating airline data.** `src/providers/airline-directory/data/airlines.json` is a static, manually maintained file — nothing refreshes or verifies claims-contact addresses over time.
 - **Automated web-form claim submission.** Some airlines (Ryanair among them) don't accept claims by email at all — only through their own web form. Today that's a manual handoff: the system hands a human the drafted letter, the form URL, and the fields it knows are required. Driving the form submission itself — mapping fields, detecting when an airline's form layout changes, and never guessing at a field it can't confidently identify — is proposed but not built; see [issue #8](https://github.com/pavle-K/plane-refunds-gdpr-agent/issues/8).
 - **Rate-limit handling.** A real provider 429 isn't yet translated into a user-facing message for the LangChain model layer.

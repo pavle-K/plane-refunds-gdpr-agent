@@ -1,0 +1,83 @@
+/* Light palette (default). Dark redefines the same tokens below — see
+   lib/theme.ts for how the "system" vs. explicit light/dark choice maps onto
+   the data-theme attribute these selectors key off. */
+:root {
+  --bg: #ffffff;
+  --bg-elevated: #f8fafc;
+  --bg-inset: #f1f5f9;
+  --text: #0f172a;
+  --text-secondary: #64748b;
+  --border: #e2e8f0;
+  --accent: #2563eb;
+  --accent-contrast: #ffffff;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --danger-contrast: #ffffff;
+  --warning: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f172a;
+    --bg-elevated: #172033;
+    --bg-inset: #1e293b;
+    --text: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --border: #2f3d52;
+    --accent: #60a5fa;
+    --accent-contrast: #0b1220;
+    --success: #4ade80;
+    --danger: #f87171;
+    --danger-contrast: #2b0b0b;
+    --warning: #fbbf24;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f172a;
+  --bg-elevated: #172033;
+  --bg-inset: #1e293b;
+  --text: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --border: #2f3d52;
+  --accent: #60a5fa;
+  --accent-contrast: #0b1220;
+  --success: #4ade80;
+  --danger: #f87171;
+  --danger-contrast: #2b0b0b;
+  --warning: #fbbf24;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+}
